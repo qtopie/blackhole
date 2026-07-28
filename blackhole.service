@@ -1,0 +1,25 @@
+[Unit]
+Description=Blackhole Lightweight NAS Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/blackhole
+ExecStart=/opt/blackhole/blackhole-server
+Restart=always
+RestartSec=5s
+
+# 环境变量配置
+Environment=BLACKHOLE_PORT=50056
+Environment=BLACKHOLE_SHARE_DIR=/var/nas_share
+Environment=BLACKHOLE_USER=admin
+Environment=BLACKHOLE_PASS=your_secure_password
+
+# 资源限制（专为 SpacemiT K1 RISC-V 极轻量优化）
+MemoryMax=100M
+MemoryHigh=80M
+
+[Install]
+WantedBy=multi-user.target
