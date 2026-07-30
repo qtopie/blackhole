@@ -237,6 +237,10 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
 	}
 
 	c.Header("Content-Type", "text/html; charset=utf-8")
+
+	// 上传目标路径（去掉首尾斜杠）
+	uploadBase := strings.Trim(relPath, "/")
+
 	html := fmt.Sprintf(`<!DOCTYPE html>
 <html>
 <head>
@@ -250,12 +254,65 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
         a { color: #7dd3fc; text-decoration: none; }
         a:hover { text-decoration: underline; }
         .meta { color: #64748b; font-size: 14px; }
+        .upload-area { margin-bottom: 20px; padding: 16px; background: #1e293b; border-radius: 8px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+        .upload-area input[type="file"] { flex: 1; min-width: 180px; color: #f8fafc; }
+        .upload-btn { background: #38bdf8; color: #0f172a; border: none; padding: 8px 20px; border-radius: 6px; cursor: pointer; font-weight: 600; }
+        .upload-btn:hover { background: #7dd3fc; }
+        .upload-status { color: #64748b; font-size: 14px; width: 100%; }
+        .upload-progress { color: #22c55e; font-size: 14px; }
     </style>
 </head>
 <body>
     <h1>📂 Blackhole NAS: %s</h1>
+
+    <div class="upload-area">
+        <input type="file" id="fileInput" multiple />
+        <button class="upload-btn" onclick="uploadFiles()">📤 上传</button>
+        <div id="uploadStatus" class="upload-status"></div>
+    </div>
+
+    <script>
+    async function uploadFiles() {
+        const input = document.getElementById('fileInput');
+        const status = document.getElementById('uploadStatus');
+        const files = input.files;
+        if (!files.length) { status.textContent = '请选择文件'; return; }
+
+        const basePath = '%s';
+        status.className = 'upload-status';
+        status.textContent = '上传中...';
+        let completed = 0, failed = 0;
+
+        for (const file of files) {
+            const formData = new FormData();
+            formData.append('file', file);
+            const pathParam = basePath ? encodeURIComponent(basePath + '/') + encodeURIComponent(file.name) : encodeURIComponent(file.name);
+            try {
+                const res = await fetch('/api/upload?path=' + pathParam, { method: 'POST', body: formData });
+                const data = await res.json();
+                if (data.status === 'success') {
+                    completed++;
+                } else {
+                    failed++;
+                    console.error('Upload failed:', data);
+                }
+            } catch (e) {
+                failed++;
+                console.error(e);
+            }
+            status.textContent = '✅ ' + completed + ' 成功  ❌ ' + failed + ' 失败  / 共 ' + files.length + ' 个文件';
+        }
+
+        if (failed === 0) {
+            status.className = 'upload-progress';
+            status.textContent = '🎉 全部上传完成！';
+        }
+        setTimeout(() => location.reload(), 1500);
+    }
+    </script>
+
     <ul>
-`, relPath, relPath)
+`, relPath, relPath, uploadBase)
 
 	if relPath != "/" && relPath != "" {
 		html += `<li><a href="../">📁 .. (Up one level)</a></li>`
