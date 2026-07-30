@@ -15,7 +15,7 @@ RestartSec=5s
 Environment=BLACKHOLE_PORT=50056
 Environment=BLACKHOLE_SHARE_DIR=/var/nas_share
 Environment=BLACKHOLE_USER=admin
-Environment=BLACKHOLE_PASS=your_secure_password
+Environment=BLACKHOLE_PASS=blackhole
 
 # 资源限制（专为 SpacemiT K1 RISC-V 极轻量优化）
 MemoryMax=100M
