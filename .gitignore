@@ -22,3 +22,5 @@ vendor/
 *.swo
 *~
 bin/
+
+.agents/TASK.md

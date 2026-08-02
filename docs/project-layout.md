@@ -1,56 +1,19 @@
-# Blackhole Project Layout
-
-This document describes the standard Go project structure used in **Blackhole NAS**.
+# Project Layout & Module Boundaries
 
 ## Directory Structure
+- `specs/`: Single Source of Truth (SSOT) 规范与契约
+- `harness/`: Harness 评估与测试夹具工程
+  - `harness/fixtures/`: 自动化测试用例静态数据与 Mock 存根
+  - `harness/mocks/`: 外部依赖、数据库与 RPC 接口桩服务
+  - `harness/runners/`: BDD 场景套件执行器与不变量断言点
+  - `harness/docker-compose.yml`: 容器化测试沙盒定义
+- `docs/`: 方案设计、RFCs、Bug RCA、规范文档
+  - `docs/testing/guidelines.md`: 全局测试规范与工具链指引
+  - `docs/testing/harness-engineering.md`: Harness 评估与测试套件指南
+- `testings/`: 自动化集成测试与 E2E 测试集
+- `scripts/`: 构建与校验自动化工具链（`check.sh`, `check-harness.sh`, `check-spec-drift.sh`）
 
-```text
-blackhole/
-├── cmd/
-│   └── main.go                 # Application entry point, CLI flag & signal handling
-├── internal/
-│   ├── config/
-│   │   └── config.go           # Environment variables and system configuration loader
-│   ├── downloader/
-│   │   └── downloader.go       # Background download manager
-│   ├── handler/
-│   │   └── handler.go          # HTTP API handlers, Web UI, and WebDAV router integration
-│   ├── nfs/
-│   │   └── nfs.go              # NFSv4 user-space protocol server stub
-│   ├── server/
-│   │   └── server.go           # Gin engine setup, authentication, and HTTP server lifecycle
-│   ├── smb/
-│   │   └── smb.go              # Native SMB2/SMB3 protocol server implementation
-│   ├── vault/
-│   │   └── vault.go            # AES-256-GCM + PBKDF2 Zero-Knowledge encrypted vault
-│   └── zeroconf/
-│       └── zeroconf.go         # mDNS / DNS-SD local network service discovery broadcast
-├── docs/
-│   ├── project-layout.md       # Project architecture and layout documentation
-│   └── regression-testing/
-│       └── smb-testing.md      # Regression test cases for SMB2/SMB3 protocol
-├── scripts/
-│   └── deploy-k1.sh            # Deployment script for SpacemiT K1 RISC-V SBC
-├── tests/
-│   ├── test_blackhole.sh       # Shell verification script
-│   ├── test_blackhole.py       # Python API and WebDAV test suite
-│   ├── test_smb_protocol.py    # Python SMB2/SMB3 raw packet test script
-│   └── test_smb3.py            # Python SMB3 protocol handshake test suite
-├── bin/                        # Output directory for compiled binaries
-├── blackhole.service           # Systemd unit service configuration
-├── go.mod                      # Go module definition
-├── go.sum                      # Go module checksums
-└── README.md                   # Project overview, features, and user guide
-```
-
-## Package Overview
-
-- **`cmd/`**: Contains the main package for building executable binaries. No business logic should reside here.
-- **`internal/`**: Private application code. External projects cannot import packages under `internal/`.
-  - **`config`**: Loads configurations from environment variables (`BLACKHOLE_PORT`, `BLACKHOLE_PASS`, etc.).
-  - **`handler`**: Contains REST API implementations, Web UI renderer, and WebDAV proxying.
-  - **`server`**: Assembles Gin HTTP routes, authentication middlewares, and handles HTTP server graceful shutdown.
-  - **`smb`**: Low-level TCP socket listener parsing NetBIOS frames and SMB2/SMB3 header packets.
-  - **`nfs`**: NFSv4 TCP listener handling network RPC mounts.
-  - **`vault`**: Cryptographic module for secure file storage using AES-256-GCM with PBKDF2 salt key derivation.
-  - **`zeroconf`**: Registers mDNS DNS-SD services for network auto-discovery on macOS/Linux.
+## Module Dependencies Rule
+- 模块间依赖必须保持单向流转，禁止循环依赖。
+- 业务代码实现必须时刻保持与 `specs/` 契约一致。
+- 单元测试放在与被测代码同级的目录下；集成/E2E 测试统一放在 `testings/` 下；测试夹具与桩集中在 `harness/` 中。

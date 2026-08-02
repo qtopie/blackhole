@@ -1,32 +1,31 @@
-# AGENTS.md
+# AGENTS.md - System Operating Guidelines
 
-Welcome to the **Blackhole NAS** project!
+Welcome Agent! You are a core collaborator in this repository. You MUST strictly adhere to these operational rules.
 
-This document provides developer guidelines for AI agents and human contributors working on this codebase.
+## 1. Context Loading & Memory Rule
+- **Always Check `.agents/TASK.md` First:** Before taking any action, read `.agents/TASK.md` to restore context.
+- **Maintain `.agents/TASK.md`:** Update `.agents/TASK.md` checklist items as you progress. If interrupted, write the current status under `Current Context`.
 
-## Repository Overview
+## 2. Spec-First Gate (Strict Enforcement)
+- **SSOT (Single Source of Truth):** All behavioral contracts belong in `specs/`. Never implement feature logic without an approved Spec.
+- **No Spec, No Code:** 
+  1. Draft/Update files in `specs/` or `docs/rfcs/`.
+  2. Wait for explicit user approval (`APPROVE`).
+  3. Generate or update test harness fixtures (`harness/`) and test stubs (`testings/`).
+  4. Only then implement business logic code.
 
-Blackhole is a high-performance, ultra-lightweight standalone NAS core server written in Go, specifically optimized for RISC-V architectures (such as SpacemiT K1 / Milk-V Jupiter) and resource-constrained devices.
+## 3. Harness Engineering & Testing Gate
+- **Harness-Driven Development:** Maintain fixtures, mocks, and runners in `harness/`.
+- **Structured Diagnostic Feedback:** When tests fail, read the `Harness Failure Report` automatically written to `.agents/TASK.md` to perform targeted fixes instead of guessing logs.
+- **No Shallow Tests:** Never write trivial Getter/Setter tests; tests must cover real boundary conditions and error scenarios.
+- **Mock External Dependencies:** Always mock databases, network I/O, external RPCs, and hardware APIs in unit tests and harness mocks (`harness/mocks/`).
 
-## Project Layout
+## 4. Grounding & Code Rules
+- **Read Before Write:** Read target files and their dependencies before editing.
+- **Zero Assumptions:** Ask the user if architecture or variable definitions are missing.
+- **Minimal Diff:** Modify only what is required. Do not refactor unrelated code.
 
-This project strictly follows the standard Go project layout. For full details on package responsibilities and directory structure, please refer to [docs/project-layout.md](file:///home/qtopierw/workspace/projects/blackhole/docs/project-layout.md).
-
-### Quick Summary
-
-- **Entry Point**: [cmd/main.go](file:///home/qtopierw/workspace/projects/blackhole/cmd/main.go)
-- **Internal Logic**: Located under `internal/`:
-  - `internal/config`: Configuration loader
-  - `internal/handler`: HTTP & Web UI handlers
-  - `internal/server`: HTTP server & Gin routing
-  - `internal/smb`: Native SMB2/SMB3 protocol server
-  - `internal/nfs`: NFSv4 server stub
-  - `internal/vault`: AES-256-GCM Zero-Knowledge encryption
-  - `internal/zeroconf`: mDNS / DNS-SD service broadcast
-
-## Coding Guidelines
-
-1. **Language & Style**: Follow standard Go conventions (`gofmt`, `go vet`).
-2. **Log Messages**: Use English for all log outputs and console messages.
-3. **Internal Packages**: Keep core domain logic inside `internal/` packages.
-4. **Cross-Compilation**: Ensure compatibility with `GOOS=linux GOARCH=riscv64 CGO_ENABLED=0`.
+## 5. Execution & Safety Red Lines
+- **Prohibited Commands:** Never run `git push --force`, `rm -rf /`, or alter external systems.
+- **Mandatory Self-Validation:** Run `./scripts/check.sh` (or `./scripts/check-harness.sh`) before marking a task complete.
+- **Error Limit:** If test/compile fixes fail > 3 times, stop and ask the user for guidance.
