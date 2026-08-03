@@ -115,6 +115,86 @@ def test_vault_upload_and_download():
         print(f"   ❌ 解密读取失败: {e}")
         return False
 
+def test_mkdir_rename_delete():
+    print(f"\n👉 [API /api/mkdir, /api/rename, /api/delete] 测试新建目录、重命名与删除功能...")
+    # 1. Mkdir
+    url_mkdir = f"http://{TARGET_IP}:{PORT_HTTP}/api/mkdir?path=py_test_dir/sub_dir"
+    req_mkdir = urllib.request.Request(url_mkdir, data=b"", method='POST')
+    req_mkdir.add_header("Authorization", get_auth_header(USERNAME, PASSWORD))
+    try:
+        with urllib.request.urlopen(req_mkdir) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            print(f"   [1/3] 📁 新建目录成功: {data}")
+    except Exception as e:
+        print(f"   ❌ 新建目录失败: {e}")
+        return False
+
+    # 2. Rename
+    url_rename = f"http://{TARGET_IP}:{PORT_HTTP}/api/rename"
+    rename_data = json.dumps({"old_path": "py_test_dir/sub_dir", "new_path": "py_test_dir/renamed_dir"}).encode('utf-8')
+    req_rename = urllib.request.Request(url_rename, data=rename_data, method='POST')
+    req_rename.add_header("Authorization", get_auth_header(USERNAME, PASSWORD))
+    req_rename.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req_rename) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            print(f"   [2/3] ✏️ 重命名目录成功: {data}")
+    except Exception as e:
+        print(f"   ❌ 重命名目录失败: {e}")
+        return False
+
+    # 3. Delete
+    url_del = f"http://{TARGET_IP}:{PORT_HTTP}/api/delete?path=py_test_dir"
+    req_del = urllib.request.Request(url_del, data=b"", method='POST')
+    req_del.add_header("Authorization", get_auth_header(USERNAME, PASSWORD))
+    try:
+        with urllib.request.urlopen(req_del) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            print(f"   [3/3] 🗑️ 删除目录成功: {data}")
+            return True
+    except Exception as e:
+        print(f"   ❌ 删除目录失败: {e}")
+        return False
+
+def test_album_api():
+    print(f"\n👉 [API /api/album/*] 测试相册配置、扫描与照片列表 API...")
+    # 1. Config
+    url_cfg = f"http://{TARGET_IP}:{PORT_HTTP}/api/album/config"
+    req_cfg = urllib.request.Request(url_cfg)
+    req_cfg.add_header("Authorization", get_auth_header(USERNAME, PASSWORD))
+    try:
+        with urllib.request.urlopen(req_cfg) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            print(f"   [1/3] 🖼️ 获取相册目录配置成功: {data.get('album_dir')}")
+    except Exception as e:
+        print(f"   ❌ 获取相册配置失败: {e}")
+        return False
+
+    # 2. Scan
+    url_scan = f"http://{TARGET_IP}:{PORT_HTTP}/api/album/scan"
+    req_scan = urllib.request.Request(url_scan, data=b"", method='POST')
+    req_scan.add_header("Authorization", get_auth_header(USERNAME, PASSWORD))
+    try:
+        with urllib.request.urlopen(req_scan) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            print(f"   [2/3] 🔄 扫描相册成功: {data.get('message')}")
+    except Exception as e:
+        print(f"   ❌ 扫描相册失败: {e}")
+        return False
+
+    # 3. List
+    url_list = f"http://{TARGET_IP}:{PORT_HTTP}/api/album/photos"
+    req_list = urllib.request.Request(url_list)
+    req_list.add_header("Authorization", get_auth_header(USERNAME, PASSWORD))
+    try:
+        with urllib.request.urlopen(req_list) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            print(f"   [3/3] 📷 查询照片数量: {data.get('count')}")
+            return True
+    except Exception as e:
+        print(f"   ❌ 查询照片列表失败: {e}")
+        return False
+
 def test_webdav_endpoint():
     print(f"\n👉 [WebDAV Endpoint /shared/] 测试挂载点...")
     url = f"http://{TARGET_IP}:{PORT_HTTP}/shared/"
@@ -145,6 +225,8 @@ def main():
     # 2. 功能测试
     test_sysinfo()
     test_upload()
+    test_mkdir_rename_delete()
+    test_album_api()
     test_vault_upload_and_download()
     test_webdav_endpoint()
 

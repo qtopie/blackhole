@@ -1,9 +1,13 @@
 package config
 
-import "os"
+import (
+	"os"
+	"path/filepath"
+)
 
 type Config struct {
 	ShareDir string
+	AlbumDir string
 	Port     string
 	Username string
 	Password string
@@ -13,6 +17,16 @@ type Config struct {
 
 	EnableNFS bool
 	NFSPort   string
+
+	DaprHost       string
+	DaprPort       string
+	DaprStateStore string
+
+	SurrealURL  string
+	SurrealUser string
+	SurrealPass string
+	SurrealNS   string
+	SurrealDB   string
 }
 
 func LoadConfig() *Config {
@@ -20,6 +34,12 @@ func LoadConfig() *Config {
 	if shareDir == "" {
 		shareDir = "./nas_share"
 	}
+
+	albumDir := os.Getenv("BLACKHOLE_ALBUM_DIR")
+	if albumDir == "" {
+		albumDir = filepath.Join(shareDir, "photos")
+	}
+
 	port := os.Getenv("BLACKHOLE_PORT")
 	if port == "" {
 		port = "50056"
@@ -45,14 +65,57 @@ func LoadConfig() *Config {
 		nfsPort = "2049"
 	}
 
+	daprHost := os.Getenv("DAPR_HOST")
+	if daprHost == "" {
+		daprHost = "127.0.0.1"
+	}
+	daprPort := os.Getenv("DAPR_HTTP_PORT")
+	if daprPort == "" {
+		daprPort = "3500"
+	}
+	daprStateStore := os.Getenv("DAPR_STATE_STORE")
+	if daprStateStore == "" {
+		daprStateStore = "statestore"
+	}
+
+	surrealURL := os.Getenv("SURREALDB_URL")
+	if surrealURL == "" {
+		surrealURL = "http://127.0.0.1:38000"
+	}
+	surrealUser := os.Getenv("SURREALDB_USER")
+	if surrealUser == "" {
+		surrealUser = "root"
+	}
+	surrealPass := os.Getenv("SURREALDB_PASS")
+	if surrealPass == "" {
+		surrealPass = "root"
+	}
+	surrealNS := os.Getenv("SURREALDB_NS")
+	if surrealNS == "" {
+		surrealNS = "blackhole"
+	}
+	surrealDB := os.Getenv("SURREALDB_DB")
+	if surrealDB == "" {
+		surrealDB = "blackhole"
+	}
+
 	return &Config{
-		ShareDir:  shareDir,
-		Port:      port,
-		Username:  username,
-		Password:  password,
-		EnableSMB: enableSMB,
-		SMBPort:   smbPort,
-		EnableNFS: enableNFS,
-		NFSPort:   nfsPort,
+		ShareDir:       shareDir,
+		AlbumDir:       albumDir,
+		Port:           port,
+		Username:       username,
+		Password:       password,
+		EnableSMB:      enableSMB,
+		SMBPort:        smbPort,
+		EnableNFS:      enableNFS,
+		NFSPort:        nfsPort,
+		DaprHost:       daprHost,
+		DaprPort:       daprPort,
+		DaprStateStore: daprStateStore,
+		SurrealURL:     surrealURL,
+		SurrealUser:    surrealUser,
+		SurrealPass:    surrealPass,
+		SurrealNS:      surrealNS,
+		SurrealDB:      surrealDB,
 	}
 }

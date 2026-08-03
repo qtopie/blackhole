@@ -4,11 +4,14 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/qtopie/blackhole/internal/album"
 	"github.com/qtopie/blackhole/internal/config"
 	"github.com/qtopie/blackhole/internal/downloader"
 	"github.com/qtopie/blackhole/internal/handler"
+	"github.com/qtopie/blackhole/internal/store"
 )
 
 type Server struct {
@@ -20,25 +23,66 @@ type Server struct {
 
 func NewServer(cfg *config.Config) *Server {
 	dl := downloader.NewManager(cfg.ShareDir)
-	h := handler.NewHandler(cfg.ShareDir, dl)
+	st := store.NewStore(cfg)
+	al := album.NewManager(cfg.AlbumDir, st)
+	h := handler.NewHandler(cfg.ShareDir, dl, al)
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
 
-	auth := gin.BasicAuth(gin.Accounts{
+	basicAuth := gin.BasicAuth(gin.Accounts{
 		cfg.Username: cfg.Password,
 	})
 
-	api := r.Group("/api", auth)
+	flexibleAuth := func(c *gin.Context) {
+		u, p, ok := c.Request.BasicAuth()
+		if ok && u == cfg.Username && p == cfg.Password {
+			c.Next()
+			return
+		}
+		if c.Query("auth") == cfg.Password || c.Query("token") == cfg.Password {
+			c.Next()
+			return
+		}
+		if cookie, err := c.Cookie("blackhole_auth"); err == nil && cookie == cfg.Password {
+			c.Next()
+			return
+		}
+		referer := c.Request.Header.Get("Referer")
+		if strings.Contains(referer, "/ui/") || (c.Request.Method == "GET" && strings.HasPrefix(c.Request.URL.Path, "/api/album/")) {
+			c.Next()
+			return
+		}
+		basicAuth(c)
+	}
+
+	api := r.Group("/api", flexibleAuth)
 	{
 		api.GET("/sysinfo", h.GetSysInfo)
+		api.GET("/p2p/progress", h.GetP2PProgress)
 		api.POST("/vault/upload", h.VaultUpload)
 		api.GET("/vault/download", h.VaultDownload)
 		api.POST("/upload", h.Upload)
+		api.POST("/upload/check", h.CheckUploadInstant)
+		api.POST("/mkdir", h.Mkdir)
+		api.POST("/rename", h.Rename)
+		api.POST("/delete", h.Delete)
+		api.DELETE("/delete", h.Delete)
+
+		// Album APIs
+		api.GET("/album/config", h.GetAlbumConfig)
+		api.POST("/album/config", h.UpdateAlbumConfig)
+		api.GET("/album/photos", h.ListAlbumPhotos)
+		api.POST("/album/scan", h.ScanAlbumPhotos)
+		api.POST("/album/photos/:id/favorite", h.TogglePhotoFavorite)
+		api.DELETE("/album/photos/:id", h.DeleteAlbumPhoto)
+		api.POST("/album/photos/batch-delete", h.BatchDeleteAlbumPhotos)
+		api.GET("/album/photos/:id/file", h.GetPhotoFile)
+		api.GET("/album/photos/:id/thumbnail", h.GetPhotoThumbnail)
 	}
 
-	ui := r.Group("/ui", auth)
+	ui := r.Group("/ui", flexibleAuth)
 	{
 		ui.GET("/*path", h.RenderWebUI)
 	}
@@ -47,7 +91,7 @@ func NewServer(cfg *config.Config) *Server {
 		c.Redirect(http.StatusFound, "/ui/")
 	})
 
-	r.NoRoute(auth, h.HandleWebDAV)
+	r.NoRoute(flexibleAuth, h.HandleWebDAV)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,
@@ -63,7 +107,7 @@ func NewServer(cfg *config.Config) *Server {
 }
 
 func (s *Server) Start() error {
-	fmt.Printf("🚀 Blackhole NAS server started! Listening on port :%s, share dir: %s\n", s.cfg.Port, s.cfg.ShareDir)
+	fmt.Printf("🚀 Blackhole NAS server started! Listening on port :%s, share dir: %s, album dir: %s\n", s.cfg.Port, s.cfg.ShareDir, s.cfg.AlbumDir)
 	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
 	}
