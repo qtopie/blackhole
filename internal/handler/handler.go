@@ -1474,12 +1474,12 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
             display: none;
             position: fixed;
             top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0, 0, 0, 0.85);
-            backdrop-filter: blur(12px);
+            background: rgba(0, 0, 0, 0.88);
+            backdrop-filter: blur(16px);
             z-index: 1000;
             align-items: center;
             justify-content: center;
-            padding: 20px;
+            padding: 0;
         }
         .modal-content {
             background: var(--fluent-surface-solid);
@@ -1493,12 +1493,35 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
             flex-direction: column;
             box-shadow: var(--fluent-shadow-depth-16);
         }
+        .modal-content-lightbox {
+            background: rgba(10, 10, 12, 0.96);
+            border: none;
+            border-radius: 0;
+            max-width: 100vw;
+            width: 100vw;
+            height: 100vh;
+            max-height: 100vh;
+            box-shadow: none;
+            position: relative;
+        }
         .modal-header {
             padding: 14px 20px;
             border-bottom: 1px solid var(--fluent-border);
             display: flex;
             justify-content: space-between;
             align-items: center;
+        }
+        .modal-header-lightbox {
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            z-index: 10;
+            background: linear-gradient(to bottom, rgba(0,0,0,0.75), rgba(0,0,0,0));
+            border-bottom: none;
+            padding: 16px 24px;
+            pointer-events: none;
+        }
+        .modal-header-lightbox * {
+            pointer-events: auto;
         }
         .modal-body {
             padding: 16px 20px;
@@ -1508,16 +1531,27 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
             flex-direction: column;
             align-items: center;
         }
+        .modal-body-lightbox {
+            padding: 0;
+            width: 100vw;
+            height: 100vh;
+            box-sizing: border-box;
+            overflow: hidden;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
         .modal-viewport {
             position: relative;
-            width: 100%%%%;
-            height: 60vh;
+            width: 100vw;
+            height: 100vh;
             overflow: hidden;
             display: flex;
             align-items: center;
             justify-content: center;
-            background: rgba(0, 0, 0, 0.6);
-            border-radius: 8px;
+            background: #000;
+            border-radius: 0;
             user-select: none;
         }
         .modal-viewport:-webkit-full-screen {
@@ -1533,8 +1567,14 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
             background: #000;
         }
         .modal-preview {
-            max-width: 100%%%%;
-            max-height: 100%%%%;
+            /* Reliable min-scale: use vw/vh units directly on img.
+               Browser picks min(100vw/iw, 100vh/ih) => both dims always fit.
+               Black bars fill the remaining space (set by viewport background:#000). */
+            max-width: 100vw;
+            max-height: 100vh;
+            width: auto;
+            height: auto;
+            display: block;
             object-fit: contain;
             transition: transform 0.15s cubic-bezier(0.1, 0.9, 0.2, 1);
             cursor: grab;
@@ -1551,17 +1591,42 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
             box-shadow: var(--fluent-shadow-depth-8);
         }
         .lightbox-toolbar {
+            position: absolute;
+            bottom: 20px;
+            left: 50%%%%;
+            transform: translateX(-50%%%%);
+            z-index: 10;
             display: flex;
             align-items: center;
             justify-content: center;
             gap: 6px;
-            background: rgba(0, 0, 0, 0.4);
-            backdrop-filter: blur(12px);
-            padding: 6px 14px;
-            border-radius: 20px;
-            margin-top: 12px;
-            border: 1px solid var(--fluent-border-subtle);
+            background: rgba(20, 20, 24, 0.65);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            padding: 8px 16px;
+            border-radius: 24px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
             flex-wrap: wrap;
+            transition: opacity 0.25s ease, transform 0.25s ease;
+        }
+        .modal-body-lightbox:hover .lightbox-toolbar {
+            opacity: 1;
+        }
+        .lightbox-meta-overlay {
+            position: absolute;
+            bottom: 74px;
+            left: 50%%%%;
+            transform: translateX(-50%%%%);
+            z-index: 9;
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(10px);
+            padding: 4px 14px;
+            border-radius: 12px;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.85);
+            pointer-events: none;
+            white-space: nowrap;
         }
         .lightbox-toolbar .fluent-btn {
             padding: 5px 12px;
@@ -1716,20 +1781,37 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
         </div>
     </div>
 
+    <!-- FLUENT MODAL DIALOG (CONFIRM & ALERT) -->
+    <div id="fluentModalDialog" class="modal" onclick="closeFluentDialog(event, false)">
+        <div class="modal-content" style="max-width: 440px; border-radius: 12px; box-shadow: 0 16px 32px rgba(0, 0, 0, 0.28);" onclick="event.stopPropagation()">
+            <div class="modal-header" style="border-bottom: 1px solid var(--fluent-border);">
+                <h3 id="fluentDialogTitle" style="font-size:16px; font-weight:600; display:flex; align-items:center; gap:8px;">提示</h3>
+                <button class="fluent-btn fluent-btn-subtle" onclick="closeFluentDialog(null, false)">✕</button>
+            </div>
+            <div class="modal-body" style="text-align:left; padding: 22px 24px;">
+                <div id="fluentDialogContent" style="font-size:14px; line-height:1.6; color:var(--fluent-text-primary); margin-bottom:24px;"></div>
+                <div style="display:flex; justify-content:flex-end; gap:12px;">
+                    <button id="fluentDialogCancelBtn" class="fluent-btn fluent-btn-subtle" onclick="closeFluentDialog(null, false)">取消</button>
+                    <button id="fluentDialogConfirmBtn" class="fluent-btn fluent-btn-accent" onclick="closeFluentDialog(null, true)">确定</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- PHOTO & VIDEO LIGHTBOX MODAL -->
     <div id="photoModal" class="modal" onclick="closePhotoModal(event)">
-        <div class="modal-content" onclick="event.stopPropagation()">
-            <div class="modal-header">
-                <h3 id="modalPhotoTitle" style="font-size:15px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:80%%%%;">媒体详情</h3>
-                <button class="fluent-btn fluent-btn-subtle" onclick="closePhotoModal()">✕</button>
+        <div class="modal-content modal-content-lightbox" onclick="event.stopPropagation()">
+            <div class="modal-header modal-header-lightbox">
+                <h3 id="modalPhotoTitle" style="font-size:15px; font-weight:600; color:#fff; text-shadow:0 1px 4px rgba(0,0,0,0.8); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:80%%%%;">媒体详情</h3>
+                <button class="fluent-btn fluent-btn-subtle" onclick="closePhotoModal()" style="color:#fff; background:rgba(255,255,255,0.15);">✕</button>
             </div>
-            <div class="modal-body">
+            <div class="modal-body modal-body-lightbox">
                 <div id="modalViewport" class="modal-viewport" ondblclick="toggleFullscreen()">
                     <img id="modalPhotoImg" class="modal-preview" src="" alt="photo" style="display:none;">
                     <video id="modalVideoPlayer" class="modal-video-player" src="" controls autoplay loop style="display:none;"></video>
                 </div>
 
-                <!-- Interactive Lightbox Toolbar -->
+                <!-- Floating Glassmorphism Overlay Toolbar -->
                 <div class="lightbox-toolbar">
                     <button class="fluent-btn fluent-btn-subtle" onclick="navPrevPhoto()" title="上一张 (←)">⬅️ 上一张</button>
                     <button id="btnRotateCCW" class="fluent-btn fluent-btn-subtle" onclick="rotateCCW()" title="逆时针旋转 (Shift+R)">↺ 旋转</button>
@@ -1745,7 +1827,7 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
                     <button id="modalDeleteBtn" class="fluent-btn fluent-btn-danger" onclick="deleteCurrentPhoto()">🗑️ 删除</button>
                 </div>
 
-                <div id="modalPhotoMeta" style="margin-top:10px; font-size:12px; color:var(--fluent-text-secondary);"></div>
+                <div id="modalPhotoMeta" class="lightbox-meta-overlay"></div>
             </div>
         </div>
     </div>
@@ -1938,13 +2020,14 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
         filterTable();
     }
 
-    function toggleHideItem(name, isCurrentlyHidden) {
+    async function toggleHideItem(name, isCurrentlyHidden) {
         const langData = i18n[currentLang];
         const msg = isCurrentlyHidden
             ? langData.confirmUnhide.replace('{name}', name)
             : langData.confirmHide.replace('{name}', name);
 
-        if (!confirm(msg)) return;
+        const ok = await showFluentConfirm({ title: isCurrentlyHidden ? '取消隐藏' : '隐藏项目', content: msg });
+        if (!ok) return;
 
         let newName = '';
         if (isCurrentlyHidden) {
@@ -1971,6 +2054,79 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
         })
         .catch(err => alert(err));
     }
+
+    // Fluent UI Modal Dialog System (replaces native alert and confirm)
+    let fluentDialogResolve = null;
+
+    function showFluentConfirm(options) {
+        return new Promise((resolve) => {
+            fluentDialogResolve = resolve;
+            const dialog = document.getElementById("fluentModalDialog");
+            const titleEl = document.getElementById("fluentDialogTitle");
+            const contentEl = document.getElementById("fluentDialogContent");
+            const confirmBtn = document.getElementById("fluentDialogConfirmBtn");
+            const cancelBtn = document.getElementById("fluentDialogCancelBtn");
+
+            const icon = options.isDanger ? "⚠️ " : (options.icon || "💡 ");
+            titleEl.textContent = icon + (options.title || "确认");
+            contentEl.textContent = options.content || "";
+
+            confirmBtn.textContent = options.confirmText || "确定";
+            cancelBtn.textContent = options.cancelText || "取消";
+            cancelBtn.style.display = "";
+
+            if (options.isDanger) {
+                confirmBtn.className = "fluent-btn fluent-btn-danger";
+            } else {
+                confirmBtn.className = "fluent-btn fluent-btn-accent";
+            }
+
+            dialog.style.display = "flex";
+        });
+    }
+
+    function showFluentAlert(options) {
+        return new Promise((resolve) => {
+            fluentDialogResolve = resolve;
+            const dialog = document.getElementById("fluentModalDialog");
+            const titleEl = document.getElementById("fluentDialogTitle");
+            const contentEl = document.getElementById("fluentDialogContent");
+            const confirmBtn = document.getElementById("fluentDialogConfirmBtn");
+            const cancelBtn = document.getElementById("fluentDialogCancelBtn");
+
+            const icon = options.icon || (options.isError ? "❌ " : "💡 ");
+            titleEl.textContent = icon + (options.title || "提示");
+            contentEl.textContent = (typeof options === "string") ? options : (options.content || "");
+
+            confirmBtn.textContent = (options && options.buttonText) ? options.buttonText : "知道了";
+            confirmBtn.className = "fluent-btn fluent-btn-accent";
+            cancelBtn.style.display = "none";
+
+            dialog.style.display = "flex";
+        });
+    }
+
+    function closeFluentDialog(event, result) {
+        if (event && event.target !== document.getElementById("fluentModalDialog")) return;
+        const dialog = document.getElementById("fluentModalDialog");
+        if (dialog) dialog.style.display = "none";
+        if (fluentDialogResolve) {
+            const res = fluentDialogResolve;
+            fluentDialogResolve = null;
+            res(result);
+        }
+    }
+
+    document.addEventListener("keydown", (e) => {
+        const dialog = document.getElementById("fluentModalDialog");
+        if (dialog && dialog.style.display === "flex") {
+            if (e.key === "Escape") {
+                closeFluentDialog(null, false);
+            } else if (e.key === "Enter") {
+                closeFluentDialog(null, true);
+            }
+        }
+    });
 
     // Fluent UI Dialog Helper
     let inputDialogCallback = null;
@@ -2197,22 +2353,34 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
         }
     }
 
-    function executeBatchDeletePhotos() {
+    async function executeBatchDeletePhotos() {
         if (selectedPhotoIDs.size === 0) {
             if (darkFilterState && currentPhotosList && currentPhotosList.length) {
-                if (confirm('确定要全选并批量删除当前翻页视图中的全部 ' + currentPhotosList.length + ' 张纯黑误拍废片吗？此操作不可撤销！')) {
+                const confirmedDark = await showFluentConfirm({
+                    title: '批量清理纯黑废片',
+                    content: '确定要全选并批量删除当前翻页视图中的全部 ' + currentPhotosList.length + ' 张纯黑误拍废片吗？此操作不可撤销！',
+                    confirmText: '全选并删除',
+                    isDanger: true
+                });
+                if (confirmedDark) {
                     currentPhotosList.forEach(p => selectedPhotoIDs.add(p.id));
                 } else {
                     return;
                 }
             } else {
-                alert('请先勾选需要批量删除的照片！');
+                showFluentAlert({ title: '提示', content: '请先勾选需要批量删除的照片！' });
                 return;
             }
         }
 
         const count = selectedPhotoIDs.size;
-        if (!confirm('确定要永久删除已选中的 ' + count + ' 张照片文件及其记录吗？此操作不可恢复！')) {
+        const confirmedDelete = await showFluentConfirm({
+            title: '批量删除确认',
+            content: '确定要永久删除已选中的 ' + count + ' 张照片文件及其记录吗？此操作不可恢复！',
+            confirmText: '永久删除',
+            isDanger: true
+        });
+        if (!confirmedDelete) {
             return;
         }
 
@@ -2650,10 +2818,16 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
         });
     }
 
-    function confirmDelete(name, isDir) {
+    async function confirmDelete(name, isDir) {
         const langData = i18n[currentLang];
         const msg = isDir ? langData.confirmDeleteDir.replace('{name}', name) : langData.confirmDeleteFile.replace('{name}', name);
-        if (!confirm(msg)) return;
+        const ok = await showFluentConfirm({
+            title: isDir ? '删除文件夹' : '删除文件',
+            content: msg,
+            confirmText: '永久删除',
+            isDanger: true
+        });
+        if (!ok) return;
 
         const targetPath = currentPath ? currentPath + '/' + name : name;
         fetch('/api/delete?path=' + encodeURIComponent(targetPath), { method: 'POST' })

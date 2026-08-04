@@ -157,6 +157,7 @@ func CalculateLuminance(img image.Image) (float64, bool) {
 	}
 
 	var totalLum float64
+	var maxLum float64
 	sampleCount := 0
 
 	for y := bounds.Min.Y; y < bounds.Max.Y; y += 4 {
@@ -167,6 +168,9 @@ func CalculateLuminance(img image.Image) (float64, bool) {
 			b8 := float64(b >> 8)
 			lum := 0.299*r8 + 0.587*g8 + 0.114*b8
 			totalLum += lum
+			if lum > maxLum {
+				maxLum = lum
+			}
 			sampleCount++
 		}
 	}
@@ -176,6 +180,10 @@ func CalculateLuminance(img image.Image) (float64, bool) {
 	}
 
 	avgLum := totalLum / float64(sampleCount)
-	isDark := avgLum <= 75.0
+	// A true "waste shot" (lens cap on) requires BOTH:
+	// 1. Very low average brightness (overall dark)
+	// 2. Very low maximum brightness (no bright spots at all)
+	// This correctly excludes star/night photography which has dark bg but bright stars
+	isDark := avgLum <= 15.0 && maxLum <= 30.0
 	return avgLum, isDark
 }

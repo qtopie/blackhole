@@ -17,3 +17,10 @@
    - `POST /api/album/photos/batch-delete`:
      Payload: `{"photo_ids": ["id1", "id2", ...]}`
      Must remove photo original files from physical disk, delete thumbnail cache files, and delete records from database store.
+
+4. **Fullscreen Lightbox & Adaptive Container Fitting Contract**:
+   - **Container-Fit Viewport (`#modalViewport`)**: The image viewport MUST occupy the full modal body container space (`position: relative; width: 100%; height: 100%; overflow: hidden`).
+   - **Floating Overlay Toolbar (`.lightbox-toolbar`)**: Floating controls (Header, Navigation, Zoom, Meta) MUST be overlayed with translucent/glassmorphism styling (`position: absolute; pointer-events: auto`) on top of the image container so they never occupy structural layout height or crop/squeeze the image.
+   - **Adaptive Min-Scale Fit**: The preview image (`#modalPhotoImg`) MUST be scaled by the **minimum** of `(viewportWidth / imageWidth)` and `(viewportHeight / imageHeight)`, i.e. `object-fit: contain` within a container that is exactly `100vw × 100vh`. This guarantees both dimensions always fit: when a photo is wider than the screen it scales to viewport width; when it is taller it scales to viewport height; when both exceed the screen it picks the smaller ratio so the photo is always 100% visible in one glance.
+
+
