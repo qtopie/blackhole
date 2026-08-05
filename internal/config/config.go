@@ -8,6 +8,7 @@ import (
 type Config struct {
 	ShareDir string
 	AlbumDir string
+	BooksDir string
 	Port     string
 	Username string
 	Password string
@@ -38,6 +39,11 @@ func LoadConfig() *Config {
 	albumDir := os.Getenv("BLACKHOLE_ALBUM_DIR")
 	if albumDir == "" {
 		albumDir = filepath.Join(shareDir, "photos")
+	}
+
+	booksDir := os.Getenv("BLACKHOLE_BOOKS_DIR")
+	if booksDir == "" {
+		booksDir = filepath.Join(shareDir, "books")
 	}
 
 	port := os.Getenv("BLACKHOLE_PORT")
@@ -102,6 +108,7 @@ func LoadConfig() *Config {
 	return &Config{
 		ShareDir:       shareDir,
 		AlbumDir:       albumDir,
+		BooksDir:       booksDir,
 		Port:           port,
 		Username:       username,
 		Password:       password,

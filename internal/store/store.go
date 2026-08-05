@@ -42,6 +42,21 @@ type Album struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+type Book struct {
+	ID        string    `json:"id"`
+	Filename  string    `json:"filename"`
+	Path      string    `json:"path"`
+	RelPath   string    `json:"rel_path"`
+	Title     string    `json:"title"`
+	Author    string    `json:"author"`
+	Format    string    `json:"format"`
+	Size      int64     `json:"size"`
+	Hash      string    `json:"hash"`
+	HasCover  bool      `json:"has_cover"`
+	MIMEType  string    `json:"mime_type"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type Store struct {
 	cfg        *config.Config
 	httpClient *http.Client
@@ -49,6 +64,7 @@ type Store struct {
 	mu     sync.RWMutex
 	photos map[string]*Photo
 	albums map[string]*Album
+	books  map[string]*Book
 }
 
 func NewStore(cfg *config.Config) *Store {
@@ -59,6 +75,7 @@ func NewStore(cfg *config.Config) *Store {
 		},
 		photos: make(map[string]*Photo),
 		albums: make(map[string]*Album),
+		books:  make(map[string]*Book),
 	}
 }
 
@@ -227,4 +244,66 @@ func (s *Store) ListAlbums() ([]*Album, error) {
 		list = append(list, a)
 	}
 	return list, nil
+}
+
+func (s *Store) SaveBook(book *Book) error {
+	s.mu.Lock()
+	s.books[book.ID] = book
+	s.mu.Unlock()
+
+	_ = s.saveDaprState("book:"+book.ID, book)
+
+	bookJSON, err := json.Marshal(book)
+	if err == nil {
+		sql := fmt.Sprintf("USE NS %s; USE DB %s; UPSERT book:`%s` CONTENT %s;",
+			s.cfg.SurrealNS, s.cfg.SurrealDB, book.ID, string(bookJSON))
+		_, _ = s.querySurrealDB(sql)
+	}
+	return nil
+}
+
+func (s *Store) GetBook(id string) (*Book, error) {
+	s.mu.RLock()
+	b, ok := s.books[id]
+	s.mu.RUnlock()
+	if ok {
+		return b, nil
+	}
+	return nil, fmt.Errorf("book not found")
+}
+
+func (s *Store) DeleteBook(id string) error {
+	s.mu.Lock()
+	delete(s.books, id)
+	s.mu.Unlock()
+
+	sql := fmt.Sprintf("USE NS %s; USE DB %s; DELETE book:`%s`;", s.cfg.SurrealNS, s.cfg.SurrealDB, id)
+	_, _ = s.querySurrealDB(sql)
+	return nil
+}
+
+func (s *Store) ListBooks() ([]*Book, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	list := make([]*Book, 0, len(s.books))
+	for _, b := range s.books {
+		list = append(list, b)
+	}
+	return list, nil
+}
+
+func (s *Store) FindBookByHashOrSize(hash string, size int64) *Book {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, b := range s.books {
+		if hash != "" && b.Hash == hash {
+			return b
+		}
+		if size > 0 && b.Size == size {
+			return b
+		}
+	}
+	return nil
 }

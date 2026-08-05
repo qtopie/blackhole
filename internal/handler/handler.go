@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/qtopie/blackhole/internal/album"
+	"github.com/qtopie/blackhole/internal/book"
 	"github.com/qtopie/blackhole/internal/downloader"
 	"github.com/qtopie/blackhole/internal/store"
 	"github.com/qtopie/blackhole/internal/vault"
@@ -48,13 +49,15 @@ type Handler struct {
 	downloadMgr   *downloader.Manager
 	webdavHandler *webdav.Handler
 	albumMgr      *album.Manager
+	bookMgr       *book.Manager
 }
 
-func NewHandler(shareDir string, downloadMgr *downloader.Manager, albumMgr *album.Manager) *Handler {
+func NewHandler(shareDir string, downloadMgr *downloader.Manager, albumMgr *album.Manager, bookMgr *book.Manager) *Handler {
 	return &Handler{
 		shareDir:    shareDir,
 		downloadMgr: downloadMgr,
 		albumMgr:    albumMgr,
+		bookMgr:     bookMgr,
 		webdavHandler: &webdav.Handler{
 			Prefix:     "/shared",
 			FileSystem: webdav.Dir(shareDir),
@@ -749,6 +752,158 @@ func (h *Handler) GetPhotoThumbnail(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusNotFound, gin.H{"error": "媒体项目未找到"})
+}
+
+func (h *Handler) GetBooksConfig(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"books_dir": h.bookMgr.GetBooksDir(),
+	})
+}
+
+func (h *Handler) UpdateBooksConfig(c *gin.Context) {
+	var req struct {
+		BooksDir string `json:"books_dir" form:"books_dir"`
+	}
+	dir := c.Query("books_dir")
+	if dir == "" {
+		if err := c.ShouldBindJSON(&req); err == nil && req.BooksDir != "" {
+			dir = req.BooksDir
+		}
+	}
+
+	if dir == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "书籍目录不能为空"})
+		return
+	}
+
+	if err := h.bookMgr.SetBooksDir(dir); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":    "success",
+		"message":   "书籍目录更新成功",
+		"books_dir": h.bookMgr.GetBooksDir(),
+	})
+}
+
+func (h *Handler) ListBooks(c *gin.Context) {
+	search := c.Query("search")
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "25"))
+
+	if page < 1 {
+		page = 1
+	}
+
+	books, err := h.bookMgr.ListBooks(search)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	total := len(books)
+	var pagedBooks []*store.Book
+
+	if limit <= 0 {
+		pagedBooks = books
+		limit = total
+		if limit == 0 {
+			limit = 1
+		}
+	} else {
+		start := (page - 1) * limit
+		if start < total {
+			end := start + limit
+			if end > total {
+				end = total
+			}
+			pagedBooks = books[start:end]
+		} else {
+			pagedBooks = []*store.Book{}
+		}
+	}
+
+	totalPages := 1
+	if limit > 0 && total > 0 {
+		totalPages = (total + limit - 1) / limit
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":      "success",
+		"total":       total,
+		"page":        page,
+		"limit":       limit,
+		"total_pages": totalPages,
+		"count":       len(pagedBooks),
+		"books":       pagedBooks,
+	})
+}
+
+func (h *Handler) ScanBooks(c *gin.Context) {
+	count, err := h.bookMgr.ScanDirectory()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": fmt.Sprintf("扫描完成，共索引 %d 本电子书", count),
+		"count":   count,
+	})
+}
+
+func (h *Handler) GetBookCover(c *gin.Context) {
+	id := c.Param("id")
+	coverPath, err := h.bookMgr.EnsureCover(id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "封面未找到"})
+		return
+	}
+
+	fi, statErr := os.Stat(coverPath)
+	if statErr != nil || fi.Size() == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "封面未找到"})
+		return
+	}
+
+	c.Header("Content-Type", h.bookMgr.CoverMIMEType(coverPath))
+	c.Header("Cache-Control", "public, max-age=86400")
+	c.Header("ETag", fmt.Sprintf("\"cover-%s-%d\"", id, fi.Size()))
+	http.ServeFile(c.Writer, c.Request, coverPath)
+}
+
+func (h *Handler) GetBookFile(c *gin.Context) {
+	id := c.Param("id")
+	books, err := h.bookMgr.ListBooks("")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	for _, b := range books {
+		if b.ID == id {
+			if b.MIMEType != "" {
+				c.Header("Content-Type", b.MIMEType)
+			}
+			c.Header("Accept-Ranges", "bytes")
+			http.ServeFile(c.Writer, c.Request, b.Path)
+			return
+		}
+	}
+	c.JSON(http.StatusNotFound, gin.H{"error": "书籍未找到"})
+}
+
+func (h *Handler) DeleteBook(c *gin.Context) {
+	id := c.Param("id")
+	if err := h.bookMgr.DeleteBook(id); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "书籍删除成功",
+	})
 }
 
 func (h *Handler) HandleWebDAV(c *gin.Context) {
@@ -1653,6 +1808,7 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
                 <div class="nav-tabs">
                     <button class="tab-btn active" id="tabFiles" onclick="switchMainTab('files')" data-i18n="filesTab">📁 文件管理</button>
                     <button class="tab-btn" id="tabAlbum" onclick="switchMainTab('album')" data-i18n="albumTab">🖼️ 照片相册</button>
+                    <button class="tab-btn" id="tabBooks" onclick="switchMainTab('books')" data-i18n="booksTab">📚 书籍</button>
                 </div>
             </div>
             <div class="header-controls">
@@ -1760,6 +1916,38 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
             </div>
         </div>
 
+        <!-- BOOK LIBRARY VIEW -->
+        <div id="booksView" style="display:none;">
+            <div class="action-bar">
+                <div class="btn-group">
+                    <button class="fluent-btn fluent-btn-accent" onclick="document.getElementById('bookInput').click()" data-i18n="uploadBook">📤 上传书籍</button>
+                    <button class="fluent-btn fluent-btn-subtle" onclick="scanBooks()" data-i18n="scanBooks">🔄 扫描书籍目录</button>
+                    <button class="fluent-btn fluent-btn-subtle" onclick="configBooksDir()" data-i18n="setBooksDir">⚙️ 设置书籍路径</button>
+                </div>
+                <input type="text" id="bookSearchInput" class="search-box" placeholder="🔍 搜索书名 / 作者..." data-i18n-placeholder="bookSearchPlaceholder" oninput="debouncedBookSearch()">
+            </div>
+
+            <div id="bookStatus" class="status-box"></div>
+
+            <input type="file" id="bookInput" multiple accept=".epub,.pdf,.mobi,.azw3,.txt" style="display:none;" onchange="uploadBooks(this.files)">
+
+            <div id="bookGrid" class="photo-grid"></div>
+
+            <!-- Fluent UI Pagination Bar -->
+            <div class="pagination-bar" id="bookPaginationBar" style="display:none;">
+                <div class="pagination-info" id="bookPageInfoLabel" style="font-size:13px; color:var(--fluent-text-secondary);"></div>
+                <div class="pagination-controls">
+                    <button class="fluent-btn fluent-btn-subtle" onclick="changeBookPage(-1)" id="bookPrevPageBtn" data-i18n="prevPage">◄ 上一页</button>
+                    <button class="fluent-btn fluent-btn-subtle" onclick="changeBookPage(1)" id="bookNextPageBtn" data-i18n="nextPage">下一页 ►</button>
+                    <select id="bookPageSizeSelect" class="search-box" style="width: auto; padding: 5px 10px; font-size:12px;" onchange="changeBookPageSize(this.value)">
+                        <option value="25">25 条/页</option>
+                        <option value="50">50 条/页</option>
+                        <option value="100">100 条/页</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
         <div class="drop-hint" data-i18n="dropHint">💡 提示：支持直接将文件拖拽至此页面进行上传 | 支持谷歌相册弹性瀑布流 | 播放视频 | 分页浏览 | 缩放/旋转/全屏图片</div>
     </div>
 
@@ -1840,6 +2028,7 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
             title: "🌌 Blackhole NAS",
             filesTab: "📁 文件管理",
             albumTab: "🖼️ 照片相册",
+            booksTab: "📚 书籍",
             root: "🏠 根目录",
             upload: "📤 上传文件",
             mkdir: "📁 新建目录",
@@ -1861,6 +2050,14 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
             scanAlbum: "🔄 扫描相册目录",
             favOnly: "❤️ 仅看收藏",
             setAlbumDir: "⚙️ 设置相册路径",
+            uploadBook: "📤 上传书籍",
+            scanBooks: "🔄 扫描书籍目录",
+            setBooksDir: "⚙️ 设置书籍路径",
+            bookSearchPlaceholder: "🔍 搜索书名 / 作者...",
+            noBooks: "📚 书架为空，点击“上传书籍”或“扫描书籍目录”",
+            promptBooksDir: "请输入书籍存储路径：",
+            confirmDeleteBook: "确定要删除书籍 「{name}」 吗？此操作将同时删除文件与封面缓存，不可恢复！",
+            bookPageInfo: "共 {total} 本电子书 | 第 {page} / {totalPages} 页",
             dropHint: "💡 提示：支持直接将文件拖拽至此页面进行上传 | 支持谷歌相册弹性瀑布流 | 播放视频 | 分页浏览 | 缩放/旋转/全屏图片",
             promptMkdir: "请输入新目录名称：",
             promptRename: "请输入新的名称：",
@@ -1891,6 +2088,7 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
             title: "🌌 Blackhole NAS",
             filesTab: "📁 Files",
             albumTab: "🖼️ Gallery",
+            booksTab: "📚 Books",
             root: "🏠 Root Directory",
             upload: "📤 Upload File",
             mkdir: "📁 New Folder",
@@ -1912,6 +2110,14 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
             scanAlbum: "🔄 Scan Gallery",
             favOnly: "❤️ Favorites Only",
             setAlbumDir: "⚙️ Album Path",
+            uploadBook: "📤 Upload Book",
+            scanBooks: "🔄 Scan Books",
+            setBooksDir: "⚙️ Books Path",
+            bookSearchPlaceholder: "🔍 Search title / author...",
+            noBooks: "📚 Bookshelf is empty. Click 'Upload Book' or 'Scan Books'.",
+            promptBooksDir: "Enter books storage path:",
+            confirmDeleteBook: "Delete book '{name}' permanently? The file and cover cache will be removed.",
+            bookPageInfo: "Total {total} books | Page {page} / {totalPages}",
             dropHint: "💡 Tip: Drag & drop files anywhere to upload | Google Photos style flex layout | Video playback | Page pagination | Zoom, Rotate & Fullscreen photos",
             promptMkdir: "Enter new folder name:",
             promptRename: "Enter new name:",
@@ -1956,6 +2162,15 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
     let albumTotalPhotos = 0;
     let albumTotalPages = 1;
 
+    // Book Library State
+    let bookPage = 1;
+    let bookPageSize = 25;
+    let bookTotalBooks = 0;
+    let bookTotalPages = 1;
+    let currentBooksList = [];
+    let currentBooksDir = '';
+    let bookSearchQuery = '';
+
     function switchMainTab(tab) {
         localStorage.setItem('blackhole_active_tab', tab);
         if (history.replaceState) {
@@ -1965,11 +2180,17 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
         }
         document.getElementById('tabFiles').classList.toggle('active', tab === 'files');
         document.getElementById('tabAlbum').classList.toggle('active', tab === 'album');
+        document.getElementById('tabBooks').classList.toggle('active', tab === 'books');
         document.getElementById('filesView').style.display = tab === 'files' ? 'block' : 'none';
         document.getElementById('albumView').style.display = tab === 'album' ? 'block' : 'none';
+        document.getElementById('booksView').style.display = tab === 'books' ? 'block' : 'none';
         if (tab === 'album') {
             loadAlbumPhotos(1);
             loadAlbumConfig();
+        }
+        if (tab === 'books') {
+            loadBooks(1);
+            loadBooksConfig();
         }
     }
 
@@ -2470,6 +2691,261 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
         grid.innerHTML = html;
     }
 
+    function loadBooksConfig() {
+        fetch('/api/books/config')
+            .then(r => r.json())
+            .then(data => {
+                if (data.books_dir) {
+                    currentBooksDir = data.books_dir;
+                }
+            })
+            .catch(() => {});
+    }
+
+    function configBooksDir() {
+        const langData = i18n[currentLang];
+        if (!currentBooksDir) {
+            currentBooksDir = '/var/nas_share/books';
+        }
+        showInputDialog({
+            title: langData.setBooksDir || '⚙️ 设置书籍路径',
+            promptText: langData.promptBooksDir || '请输入书籍存储路径：',
+            defaultValue: currentBooksDir,
+            onConfirm: (newDir) => {
+                if (!newDir || !newDir.trim()) return;
+                fetch('/api/books/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ books_dir: newDir.trim() })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        loadBooksConfig();
+                        scanBooks();
+                    } else {
+                        alert(data.error || 'Error');
+                    }
+                });
+            }
+        });
+    }
+
+    function loadBooks(page = bookPage) {
+        bookPage = page;
+        const url = '/api/books/list?search=' + encodeURIComponent(bookSearchQuery) +
+                    '&page=' + bookPage + '&limit=' + bookPageSize;
+
+        fetch(url, { credentials: 'same-origin' })
+            .then(r => {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
+            .then(data => {
+                currentBooksList = data.books || [];
+                bookTotalBooks = data.total || currentBooksList.length;
+                bookTotalPages = data.total_pages || 1;
+                renderBooksGrid();
+                renderBookPagination();
+            })
+            .catch(err => {
+                console.error('Failed to load books:', err);
+                const grid = document.getElementById('bookGrid');
+                if (grid) {
+                    grid.innerHTML = '<div style="grid-column: 1/-1; text-align:center; padding:40px; color:var(--fluent-text-secondary);">⚠️ 加载书籍列表失败: ' + err.message + '</div>';
+                }
+            });
+    }
+
+    function renderBooksGrid() {
+        const grid = document.getElementById('bookGrid');
+        const langData = i18n[currentLang];
+
+        if (!currentBooksList || !currentBooksList.length) {
+            grid.innerHTML = '<div style="grid-column: 1/-1; text-align:center; padding:40px; color:var(--fluent-text-secondary);">' + (langData.noBooks || '📚 书架为空') + '</div>';
+            return;
+        }
+
+        let html = '';
+        currentBooksList.forEach(b => {
+            const coverUrl = '/api/books/' + b.id + '/cover';
+            const fileUrl = '/api/books/' + b.id + '/file';
+            let coverElem = '<div class="book-cover-placeholder" style="width:100%%; height:100%%; display:flex; align-items:center; justify-content:center; font-size:48px;">📖</div>';
+            if (b.has_cover) {
+                coverElem = '<img class="photo-thumb" src="' + coverUrl + '" alt="' + b.title + '" loading="lazy" decoding="async" onerror="this.onerror=null; this.outerHTML=\'<div class=&quot;book-cover-placeholder&quot; style=&quot;width:100%%; height:100%%; display:flex; align-items:center; justify-content:center; font-size:48px;&quot;>📖</div>\';">';
+            }
+            const formatBadge = '<span class="fluent-badge" style="position:absolute; top:8px; right:8px; z-index:2; background:rgba(0,120,212,0.85);">' + b.format.toUpperCase() + '</span>';
+            html += '<div class="photo-card book-card" style="--aspect-ratio:0.75;" title="' + b.filename + '">' +
+                '<a href="' + fileUrl + '" download="' + b.filename + '" style="display:block; width:100%%; height:100%%; text-decoration:none; color:inherit;">' +
+                    coverElem +
+                    formatBadge +
+                    '<div class="photo-meta-overlay">' +
+                        '<div class="photo-overlay-title">' + b.title + '</div>' +
+                        '<div>' + (b.author || '未知作者') + '</div>' +
+                    '</div>' +
+                '</a>' +
+                '<button class="fluent-btn fluent-btn-danger" style="position:absolute; bottom:8px; right:8px; z-index:3; padding:4px 10px; font-size:12px; opacity:0; transition:opacity 0.15s;" onclick="event.preventDefault(); event.stopPropagation(); deleteBook(\'' + b.id + '\', \'' + b.title.replace(/'/g, "\\'") + '\')" data-i18n="delete">🗑️ 删除</button>' +
+            '</div>';
+        });
+        grid.innerHTML = html;
+        // Reveal delete button on hover
+        grid.querySelectorAll('.book-card').forEach(card => {
+            card.addEventListener('mouseenter', () => {
+                const btn = card.querySelector('button');
+                if (btn) btn.style.opacity = '1';
+            });
+            card.addEventListener('mouseleave', () => {
+                const btn = card.querySelector('button');
+                if (btn) btn.style.opacity = '0';
+            });
+        });
+    }
+
+    function renderBookPagination() {
+        const bar = document.getElementById('bookPaginationBar');
+        const langData = i18n[currentLang];
+        if (!bar) return;
+
+        if (bookTotalBooks === 0) {
+            bar.style.display = 'none';
+            return;
+        }
+        bar.style.display = 'flex';
+
+        const label = document.getElementById('bookPageInfoLabel');
+        if (label) {
+            const template = langData.bookPageInfo || '共 {total} 本电子书 | 第 {page} / {totalPages} 页';
+            label.textContent = template.replace('{total}', bookTotalBooks)
+                                        .replace('{page}', bookPage)
+                                        .replace('{totalPages}', bookTotalPages);
+        }
+
+        const prevBtn = document.getElementById('bookPrevPageBtn');
+        const nextBtn = document.getElementById('bookNextPageBtn');
+        if (prevBtn) prevBtn.disabled = bookPage <= 1;
+        if (nextBtn) nextBtn.disabled = bookPage >= bookTotalPages;
+    }
+
+    function changeBookPage(delta) {
+        const newPage = bookPage + delta;
+        if (newPage >= 1 && newPage <= bookTotalPages) {
+            loadBooks(newPage);
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+    }
+
+    function changeBookPageSize(size) {
+        bookPageSize = parseInt(size, 10);
+        bookPage = 1;
+        loadBooks(1);
+    }
+
+    function scanBooks() {
+        const status = document.getElementById('bookStatus');
+        status.style.display = 'block';
+        status.className = 'status-box status-info';
+        status.textContent = '⏳ 正在扫描书籍目录中...';
+
+        fetch('/api/books/scan', { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+                status.className = 'status-box status-success';
+                status.textContent = data.message || '🎉 扫描完成';
+                loadBooks(1);
+                setTimeout(() => { status.style.display = 'none'; }, 2000);
+            })
+            .catch(err => {
+                status.className = 'status-box status-error';
+                status.textContent = '❌ 扫描失败: ' + err;
+            });
+    }
+
+    function uploadBooks(files) {
+        if (!files || !files.length) return;
+        const status = document.getElementById('bookStatus');
+        status.style.display = 'block';
+        status.className = 'status-box status-info';
+        status.textContent = '⏳ 正在上传 ' + files.length + ' 本电子书...';
+
+        let completed = 0;
+        let failed = 0;
+        let uploaded = files.length;
+
+        files.forEach((file) => {
+            const fd = new FormData();
+            fd.append('file', file);
+            fetch('/api/upload?path=books/' + encodeURIComponent(file.name), {
+                method: 'POST',
+                body: fd
+            })
+            .then(r => r.json())
+            .then(data => {
+                completed++;
+                if (data.status !== 'success') failed++;
+                if (completed === uploaded) {
+                    status.className = 'status-box status-success';
+                    status.textContent = '🎉 上传完成: ' + (uploaded - failed) + ' 成功, ' + failed + ' 失败。正在扫描...';
+                    fetch('/api/books/scan', { method: 'POST' })
+                        .then(() => loadBooks(1))
+                        .catch(() => loadBooks(1));
+                    setTimeout(() => { status.style.display = 'none'; }, 2500);
+                }
+            })
+            .catch(() => {
+                completed++;
+                failed++;
+                if (completed === uploaded) {
+                    status.className = 'status-box status-error';
+                    status.textContent = '⚠️ 上传完成: ' + (uploaded - failed) + ' 成功, ' + failed + ' 失败。';
+                    setTimeout(() => { status.style.display = 'none'; }, 3000);
+                }
+            });
+        });
+    }
+
+    function deleteBook(id, title) {
+        const langData = i18n[currentLang];
+        showFluentConfirm({
+            title: '🗑️ ' + (langData.delete || '删除'),
+            content: (langData.confirmDeleteBook || '确定要删除书籍 「{name}」 吗？').replace('{name}', title),
+            confirmText: langData.confirm || '确定',
+            isDanger: true
+        }).then(confirmed => {
+            if (!confirmed) return;
+            fetch('/api/books/' + id, { method: 'DELETE' })
+                .then(r => r.json())
+                .then(data => {
+                    const status = document.getElementById('bookStatus');
+                    status.style.display = 'block';
+                    if (data.status === 'success') {
+                        status.className = 'status-box status-success';
+                        status.textContent = '🎉 书籍删除成功';
+                    } else {
+                        status.className = 'status-box status-error';
+                        status.textContent = '❌ 删除失败: ' + (data.error || '');
+                    }
+                    loadBooks(bookPage);
+                    setTimeout(() => { status.style.display = 'none'; }, 2000);
+                })
+                .catch(err => {
+                    const status = document.getElementById('bookStatus');
+                    status.style.display = 'block';
+                    status.className = 'status-box status-error';
+                    status.textContent = '❌ 请求失败: ' + err;
+                    setTimeout(() => { status.style.display = 'none'; }, 2000);
+                });
+        });
+    }
+
+    let bookSearchTimer = null;
+    function debouncedBookSearch() {
+        clearTimeout(bookSearchTimer);
+        bookSearchTimer = setTimeout(() => {
+            bookSearchQuery = document.getElementById('bookSearchInput').value;
+            loadBooks(1);
+        }, 300);
+    }
+
     // Lightbox Interactive Transformations, Panning & Fullscreen
     let transformState = {
         zoom: 1.0,
@@ -2938,6 +3414,8 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
             savedTab = 'files';
         } else if (window.location.hash === '#album') {
             savedTab = 'album';
+        } else if (window.location.hash === '#books') {
+            savedTab = 'books';
         } else {
             savedTab = localStorage.getItem('blackhole_active_tab') || 'album';
         }
@@ -3019,7 +3497,12 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
     dropZone.addEventListener('drop', (e) => {
         e.preventDefault();
         if (e.dataTransfer.files && e.dataTransfer.files.length) {
-            uploadFiles(e.dataTransfer.files);
+            const activeTab = localStorage.getItem('blackhole_active_tab') || 'album';
+            if (activeTab === 'books') {
+                uploadBooks(e.dataTransfer.files);
+            } else {
+                uploadFiles(e.dataTransfer.files);
+            }
         }
     });
     </script>

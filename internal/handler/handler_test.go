@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"image"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/qtopie/blackhole/internal/album"
+	"github.com/qtopie/blackhole/internal/book"
 	"github.com/qtopie/blackhole/internal/config"
 	"github.com/qtopie/blackhole/internal/downloader"
 	"github.com/qtopie/blackhole/internal/store"
@@ -30,11 +32,13 @@ func setupTestRouter(t *testing.T) (*gin.Engine, string, *album.Manager) {
 	cfg := config.LoadConfig()
 	cfg.ShareDir = tempDir
 	cfg.AlbumDir = filepath.Join(tempDir, "photos")
+	cfg.BooksDir = filepath.Join(tempDir, "books")
 
 	dl := downloader.NewManager(tempDir)
 	st := store.NewStore(cfg)
 	al := album.NewManager(cfg.AlbumDir, st)
-	h := NewHandler(tempDir, dl, al)
+	bk := book.NewManager(cfg.BooksDir, st)
+	h := NewHandler(tempDir, dl, al, bk)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -58,6 +62,14 @@ func setupTestRouter(t *testing.T) (*gin.Engine, string, *album.Manager) {
 		api.POST("/album/photos/batch-delete", h.BatchDeleteAlbumPhotos)
 		api.GET("/album/photos/:id/file", h.GetPhotoFile)
 		api.GET("/album/photos/:id/thumbnail", h.GetPhotoThumbnail)
+
+		api.GET("/books/config", h.GetBooksConfig)
+		api.POST("/books/config", h.UpdateBooksConfig)
+		api.GET("/books/list", h.ListBooks)
+		api.POST("/books/scan", h.ScanBooks)
+		api.GET("/books/:id/cover", h.GetBookCover)
+		api.GET("/books/:id/file", h.GetBookFile)
+		api.DELETE("/books/:id", h.DeleteBook)
 	}
 
 	ui := r.Group("/ui")
@@ -155,6 +167,185 @@ func TestRenderWebUI(t *testing.T) {
 	}
 	if !strings.Contains(html, "tabAlbum") {
 		t.Errorf("expected album tab in Web UI HTML")
+	}
+	if !strings.Contains(html, "tabBooks") {
+		t.Errorf("expected books tab in Web UI HTML")
+	}
+}
+
+func TestBookAPIEndpoints(t *testing.T) {
+	r, tempDir, _ := setupTestRouter(t)
+	defer os.RemoveAll(tempDir)
+
+	// 1. Get Books Config
+	req := httptest.NewRequest("GET", "/api/books/config", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "books_dir") {
+		t.Fatalf("expected 200 OK for books config, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 2. Write a test epub into the books dir and scan
+	booksDir := filepath.Join(tempDir, "books")
+	if err := os.MkdirAll(booksDir, 0755); err != nil {
+		t.Fatalf("failed to mkdir books dir: %v", err)
+	}
+	createTestEpubFile(t, filepath.Join(booksDir, "test-book.epub"), "Test Book Title", "Test Author", true)
+
+	req = httptest.NewRequest("POST", "/api/books/scan", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for books scan, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 3. List books with pagination + search
+	req = httptest.NewRequest("GET", "/api/books/list?page=1&limit=25", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "total_pages") {
+		t.Fatalf("expected 200 OK for books list, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "Test Book Title") || !strings.Contains(w.Body.String(), "Test Author") {
+		t.Fatalf("expected title/author in books list: %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "\"has_cover\":true") {
+		t.Fatalf("expected has_cover true in books list: %s", w.Body.String())
+	}
+
+	req = httptest.NewRequest("GET", "/api/books/list?search=Test+Author", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Test Book Title") {
+		t.Fatalf("expected search to match book, got %d: %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest("GET", "/api/books/list?search=zzz-none", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "Test Book Title") {
+		t.Fatalf("expected search with no matches to be empty, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Extract book id from list response
+	var listResp struct {
+		Books []struct {
+			ID string `json:"id"`
+		} `json:"books"`
+	}
+	req = httptest.NewRequest("GET", "/api/books/list", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if err := json.Unmarshal(w.Body.Bytes(), &listResp); err != nil || len(listResp.Books) != 1 {
+		t.Fatalf("failed to parse books list: %v, body=%s", err, w.Body.String())
+	}
+	bookID := listResp.Books[0].ID
+
+	// 4. Get book cover (200 with image content-type)
+	req = httptest.NewRequest("GET", "/api/books/"+bookID+"/cover", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for book cover, got %d: %s", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "image/") {
+		t.Fatalf("expected image content-type for cover, got %q", ct)
+	}
+
+	// 5. Get book file
+	req = httptest.NewRequest("GET", "/api/books/"+bookID+"/file", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for book file, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 6. Delete book, then confirm cascade 404
+	req = httptest.NewRequest("DELETE", "/api/books/"+bookID, nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "success") {
+		t.Fatalf("expected 200 OK for book delete, got %d: %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest("DELETE", "/api/books/"+bookID, nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for second delete, got %d: %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest("GET", "/api/books/"+bookID+"/cover", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for cover of deleted book, got %d", w.Code)
+	}
+}
+
+// createTestEpubFile writes a minimal valid epub zip to path.
+func createTestEpubFile(t *testing.T, path, title, author string, withCover bool) {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	addZip := func(name string, data []byte) {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatalf("failed to create zip entry %s: %v", name, err)
+		}
+		if _, err := w.Write(data); err != nil {
+			t.Fatalf("failed to write zip entry %s: %v", name, err)
+		}
+	}
+
+	addZip("META-INF/container.xml", []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>`))
+
+	manifest := `<item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/>`
+	coverMeta := ""
+	if withCover {
+		manifest = `<item id="cover-image" href="cover.jpg" media-type="image/jpeg"/>` + manifest
+		coverMeta = `<meta name="cover" content="cover-image"/>`
+	}
+	addZip("OEBPS/content.opf", []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="BookId">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+    <dc:title>`+title+`</dc:title>
+    <dc:creator opf:role="aut">`+author+`</dc:creator>
+    `+coverMeta+`
+  </metadata>
+  <manifest>
+    `+manifest+`
+  </manifest>
+  <spine>
+    <itemref idref="chapter"/>
+  </spine>
+</package>`))
+	addZip("OEBPS/chapter.xhtml", []byte(`<html xmlns="http://www.w3.org/1999/xhtml"><body><p>hi</p></body></html>`))
+	if withCover {
+		img := image.NewRGBA(image.Rect(0, 0, 32, 32))
+		for i := 0; i < 32; i++ {
+			for j := 0; j < 32; j++ {
+				img.Set(i, j, color.RGBA{R: 200, G: 30, B: 30, A: 255})
+			}
+		}
+		var jpegBuf bytes.Buffer
+		if err := jpeg.Encode(&jpegBuf, img, nil); err != nil {
+			t.Fatalf("failed to encode cover: %v", err)
+		}
+		addZip("OEBPS/cover.jpg", jpegBuf.Bytes())
+	}
+
+	if err := zw.Close(); err != nil {
+		t.Fatalf("failed to close zip: %v", err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0644); err != nil {
+		t.Fatalf("failed to write epub: %v", err)
 	}
 }
 

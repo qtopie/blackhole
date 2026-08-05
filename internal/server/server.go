@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/qtopie/blackhole/internal/album"
+	"github.com/qtopie/blackhole/internal/book"
 	"github.com/qtopie/blackhole/internal/config"
 	"github.com/qtopie/blackhole/internal/downloader"
 	"github.com/qtopie/blackhole/internal/handler"
@@ -25,7 +26,8 @@ func NewServer(cfg *config.Config) *Server {
 	dl := downloader.NewManager(cfg.ShareDir)
 	st := store.NewStore(cfg)
 	al := album.NewManager(cfg.AlbumDir, st)
-	h := handler.NewHandler(cfg.ShareDir, dl, al)
+	bk := book.NewManager(cfg.BooksDir, st)
+	h := handler.NewHandler(cfg.ShareDir, dl, al, bk)
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -50,7 +52,7 @@ func NewServer(cfg *config.Config) *Server {
 			return
 		}
 		referer := c.Request.Header.Get("Referer")
-		if strings.Contains(referer, "/ui/") || (c.Request.Method == "GET" && strings.HasPrefix(c.Request.URL.Path, "/api/album/")) {
+		if strings.Contains(referer, "/ui/") || (c.Request.Method == "GET" && (strings.HasPrefix(c.Request.URL.Path, "/api/album/") || strings.HasPrefix(c.Request.URL.Path, "/api/books/"))) {
 			c.Next()
 			return
 		}
@@ -80,6 +82,15 @@ func NewServer(cfg *config.Config) *Server {
 		api.POST("/album/photos/batch-delete", h.BatchDeleteAlbumPhotos)
 		api.GET("/album/photos/:id/file", h.GetPhotoFile)
 		api.GET("/album/photos/:id/thumbnail", h.GetPhotoThumbnail)
+
+		// Book Library APIs
+		api.GET("/books/config", h.GetBooksConfig)
+		api.POST("/books/config", h.UpdateBooksConfig)
+		api.GET("/books/list", h.ListBooks)
+		api.POST("/books/scan", h.ScanBooks)
+		api.GET("/books/:id/cover", h.GetBookCover)
+		api.GET("/books/:id/file", h.GetBookFile)
+		api.DELETE("/books/:id", h.DeleteBook)
 	}
 
 	ui := r.Group("/ui", flexibleAuth)
