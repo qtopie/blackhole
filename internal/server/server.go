@@ -135,7 +135,7 @@ func NewServer(cfg *config.Config) *Server {
 }
 
 func (s *Server) Start() error {
-	fmt.Printf("🚀 Blackhole NAS server started! Listening on port :%s, share dir: %s, album dir: %s\n", s.cfg.Port, s.cfg.ShareDir, s.cfg.AlbumDir)
+	fmt.Printf("🚀 Domour Drive server started! Listening on port :%s, share dir: %s, album dir: %s\n", s.cfg.Port, s.cfg.ShareDir, s.cfg.AlbumDir)
 	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
 	}

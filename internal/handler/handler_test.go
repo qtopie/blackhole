@@ -166,7 +166,7 @@ func TestRenderWebUI(t *testing.T) {
 	}
 
 	html := w.Body.String()
-	if !strings.Contains(html, "Blackhole NAS") {
+	if !strings.Contains(html, "Domour Drive") {
 		t.Errorf("expected title in Web UI HTML")
 	}
 	if !strings.Contains(html, "tabAlbum") {

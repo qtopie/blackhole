@@ -1,6 +1,6 @@
-# Blackhole NAS Server
+# Domour Drive (blackhole)
 
-Blackhole is a high-performance, ultra-lightweight standalone NAS core server written in Go, specifically optimized for RISC-V architectures (such as SpacemiT K1 / Milk-V Jupiter) and resource-constrained devices.
+Domour Drive is a high-performance, ultra-lightweight standalone NAS core server written in Go, specifically optimized for RISC-V architectures (such as SpacemiT K1 / Milk-V Jupiter) and resource-constrained devices.
 
 ## Key Features
 

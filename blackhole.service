@@ -1,5 +1,5 @@
 [Unit]
-Description=Blackhole Lightweight NAS Server
+Description=Domour Drive Lightweight NAS Server
 After=network.target
 
 [Service]

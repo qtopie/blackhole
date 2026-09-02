@@ -20,13 +20,13 @@ func main() {
 	cfg := config.LoadConfig()
 
 	if err := os.MkdirAll(cfg.ShareDir, 0755); err != nil {
-		log.Fatalf("Failed to create Blackhole NAS share directory: %v", err)
+		log.Fatalf("Failed to create Domour Drive share directory: %v", err)
 	}
 
 	httpSrv := server.NewServer(cfg)
 	go func() {
 		if err := httpSrv.Start(); err != nil {
-			log.Fatalf("Blackhole NAS HTTP/WebDAV server error: %v", err)
+			log.Fatalf("Domour Drive HTTP/WebDAV server error: %v", err)
 		}
 	}()
 
@@ -72,7 +72,7 @@ func main() {
 		_ = nfsSrv.Shutdown(ctx)
 	}
 	if err := httpSrv.Shutdown(ctx); err != nil {
-		log.Printf("Error shutting down Blackhole NAS HTTP server: %v", err)
+		log.Printf("Error shutting down Domour Drive HTTP server: %v", err)
 	}
-	fmt.Println("Blackhole NAS server stopped")
+	fmt.Println("Domour Drive server stopped")
 }

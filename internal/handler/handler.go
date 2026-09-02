@@ -1250,7 +1250,7 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Blackhole NAS - %s</title>
+    <title>Domour Drive - %s</title>
     <style>
         :root {
             /* Microsoft Fluent UI Design System Tokens (Dark Theme) */
@@ -1892,7 +1892,7 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
     <div class="container">
         <header>
             <div class="brand">
-                <h1 data-i18n="title">🌌 Blackhole NAS</h1>
+                <h1 data-i18n="title">🌌 Domour Drive</h1>
                 <div class="nav-tabs">
                     %s
                 </div>
@@ -2109,7 +2109,7 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
 
     const i18n = {
         zh: {
-            title: "🌌 Blackhole NAS",
+            title: "🌌 Domour Drive",
             filesTab: "📁 文件管理",
             albumTab: "🖼️ 照片相册",
             booksTab: "📚 书籍",
@@ -2171,7 +2171,7 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
             pageInfo: "共 {total} 项媒体 | 第 {page} / {totalPages} 页",
         },
         en: {
-            title: "🌌 Blackhole NAS",
+            title: "🌌 Domour Drive",
             filesTab: "📁 Files",
             albumTab: "🖼️ Gallery",
             booksTab: "📚 Books",

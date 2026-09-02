@@ -3,7 +3,7 @@ set -e
 
 K1_HOST=${1:-"spacemit-k1"}
 
-echo "🚀 开始交叉编译 Blackhole NAS 核心服务 (Linux RISC-V 64)..."
+echo "🚀 开始交叉编译 Domour Drive 核心服务 (Linux RISC-V 64)..."
 CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 go build -o bin/blackhole-server-riscv64 cmd/main.go
 
 echo "📦 传输文件至 SpacemiT K1 开发板 ($K1_HOST)..."

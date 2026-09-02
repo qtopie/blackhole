@@ -59,11 +59,11 @@ func RegisterServices(cfg *config.Config) (*Service, error) {
 	// 3. Register Device Info / HTTP (_http._tcp)
 	httpPort, _ := strconv.Atoi(cfg.Port)
 	httpSrv, err := zeroconf.Register(
-		hostname+" (Blackhole NAS)",
+		hostname+" (Domour Drive)",
 		"_http._tcp",
 		"local.",
 		httpPort,
-		[]string{"txtv=1", "vendor=Blackhole"},
+		[]string{"txtv=1", "vendor=Domour"},
 		nil,
 	)
 	if err != nil {
