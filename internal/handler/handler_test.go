@@ -72,10 +72,14 @@ func setupTestRouter(t *testing.T) (*gin.Engine, string, *album.Manager) {
 		api.DELETE("/books/:id", h.DeleteBook)
 	}
 
-	ui := r.Group("/ui")
-	{
-		ui.GET("/*path", h.RenderWebUI)
-	}
+	r.GET("/", func(c *gin.Context) {
+		c.Set("authenticated", true)
+		h.RenderWebUI(c)
+	})
+	r.NoRoute(func(c *gin.Context) {
+		c.Set("authenticated", true)
+		h.RenderWebUI(c)
+	})
 
 	return r, tempDir, al
 }
@@ -153,7 +157,7 @@ func TestRenderWebUI(t *testing.T) {
 	os.WriteFile(filepath.Join(tempDir, "sample.txt"), []byte("sample"), 0644)
 	os.Mkdir(filepath.Join(tempDir, "sample_dir"), 0755)
 
-	req := httptest.NewRequest("GET", "/ui/", nil)
+	req := httptest.NewRequest("GET", "/", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -447,16 +451,16 @@ func TestPhotoViewerAndPaginationUI(t *testing.T) {
 		t.Fatalf("expected 200 for scan, got %d", scanW.Code)
 	}
 
-	// Test GET /ui/photos/
-	req := httptest.NewRequest("GET", "/ui/photos/", nil)
+	// Test GET /photos/
+	req := httptest.NewRequest("GET", "/photos/", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "xs20") {
 		t.Fatalf("expected 200 and xs20 folder in HTML, got %d", w.Code)
 	}
 
-	// Test GET /ui/photos/xs20/
-	req = httptest.NewRequest("GET", "/ui/photos/xs20/", nil)
+	// Test GET /photos/xs20/
+	req = httptest.NewRequest("GET", "/photos/xs20/", nil)
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "DSCF0001.JPG") {

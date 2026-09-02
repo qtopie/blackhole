@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
+	"path"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -23,6 +25,9 @@ type Server struct {
 }
 
 func NewServer(cfg *config.Config) *Server {
+	if cfg.PublicDir != "" {
+		_ = os.MkdirAll(cfg.PublicDir, 0755)
+	}
 	dl := downloader.NewManager(cfg.ShareDir)
 	st := store.NewStore(cfg)
 	al := album.NewManager(cfg.AlbumDir, st)
@@ -38,24 +43,33 @@ func NewServer(cfg *config.Config) *Server {
 	})
 
 	flexibleAuth := func(c *gin.Context) {
+		authenticated := false
 		u, p, ok := c.Request.BasicAuth()
 		if ok && u == cfg.Username && p == cfg.Password {
+			authenticated = true
+		} else if c.Query("auth") == cfg.Password || c.Query("token") == cfg.Password {
+			authenticated = true
+		} else if cookie, err := c.Cookie("blackhole_auth"); err == nil && cookie == cfg.Password {
+			authenticated = true
+		}
+
+		if authenticated {
+			c.Set("authenticated", true)
 			c.Next()
 			return
 		}
-		if c.Query("auth") == cfg.Password || c.Query("token") == cfg.Password {
-			c.Next()
-			return
+
+		c.Set("authenticated", false)
+
+		// Anonymous read-only: only allow GET / HEAD for /public and /public/*
+		if c.Request.Method == "GET" || c.Request.Method == "HEAD" {
+			reqPath := path.Clean(c.Request.URL.Path)
+			if reqPath == "/public" || strings.HasPrefix(reqPath, "/public/") {
+				c.Next()
+				return
+			}
 		}
-		if cookie, err := c.Cookie("blackhole_auth"); err == nil && cookie == cfg.Password {
-			c.Next()
-			return
-		}
-		referer := c.Request.Header.Get("Referer")
-		if strings.Contains(referer, "/ui/") || (c.Request.Method == "GET" && (strings.HasPrefix(c.Request.URL.Path, "/api/album/") || strings.HasPrefix(c.Request.URL.Path, "/api/books/"))) {
-			c.Next()
-			return
-		}
+
 		basicAuth(c)
 	}
 
@@ -93,16 +107,19 @@ func NewServer(cfg *config.Config) *Server {
 		api.DELETE("/books/:id", h.DeleteBook)
 	}
 
-	ui := r.Group("/ui", flexibleAuth)
-	{
-		ui.GET("/*path", h.RenderWebUI)
-	}
+	r.GET("/", flexibleAuth, h.RenderWebUI)
 
-	r.GET("/", func(c *gin.Context) {
-		c.Redirect(http.StatusFound, "/ui/")
+	r.NoRoute(flexibleAuth, func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/shared") {
+			h.HandleWebDAV(c)
+			return
+		}
+		if c.Request.Method == "GET" || c.Request.Method == "HEAD" {
+			h.RenderWebUI(c)
+			return
+		}
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 	})
-
-	r.NoRoute(flexibleAuth, h.HandleWebDAV)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,

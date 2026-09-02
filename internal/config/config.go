@@ -6,12 +6,13 @@ import (
 )
 
 type Config struct {
-	ShareDir string
-	AlbumDir string
-	BooksDir string
-	Port     string
-	Username string
-	Password string
+	ShareDir  string
+	PublicDir string
+	AlbumDir  string
+	BooksDir  string
+	Port      string
+	Username  string
+	Password  string
 
 	EnableSMB bool
 	SMBPort   string
@@ -34,6 +35,11 @@ func LoadConfig() *Config {
 	shareDir := os.Getenv("BLACKHOLE_SHARE_DIR")
 	if shareDir == "" {
 		shareDir = "./nas_share"
+	}
+
+	publicDir := os.Getenv("BLACKHOLE_PUBLIC_DIR")
+	if publicDir == "" {
+		publicDir = filepath.Join(shareDir, "public")
 	}
 
 	albumDir := os.Getenv("BLACKHOLE_ALBUM_DIR")
@@ -107,6 +113,7 @@ func LoadConfig() *Config {
 
 	return &Config{
 		ShareDir:       shareDir,
+		PublicDir:      publicDir,
 		AlbumDir:       albumDir,
 		BooksDir:       booksDir,
 		Port:           port,

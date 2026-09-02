@@ -922,8 +922,16 @@ func selectedOpt(limit, val int) string {
 }
 
 func (h *Handler) RenderWebUI(c *gin.Context) {
-	c.SetCookie("blackhole_auth", "blackhole", 86400*30, "/", "", false, false)
+	isAuth := c.GetBool("authenticated")
+	if isAuth {
+		c.SetCookie("blackhole_auth", "blackhole", 86400*30, "/", "", false, false)
+	}
+	isReadOnly := !isAuth
+
 	relPathParam := c.Param("path")
+	if relPathParam == "" {
+		relPathParam = c.Request.URL.Path
+	}
 	cleanRel := strings.Trim(relPathParam, "/")
 	if cleanRel == "." {
 		cleanRel = ""
@@ -956,40 +964,80 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
 	}
 
 	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].IsDir() != entries[j].IsDir() {
-			return entries[i].IsDir()
+		iInfo, iErr := os.Stat(filepath.Join(fullPath, entries[i].Name()))
+		iIsDir := entries[i].IsDir()
+		if iErr == nil {
+			iIsDir = iInfo.IsDir()
+		}
+		jInfo, jErr := os.Stat(filepath.Join(fullPath, entries[j].Name()))
+		jIsDir := entries[j].IsDir()
+		if jErr == nil {
+			jIsDir = jInfo.IsDir()
+		}
+		if iIsDir != jIsDir {
+			return iIsDir
 		}
 		return strings.ToLower(entries[i].Name()) < strings.ToLower(entries[j].Name())
 	})
 
 	var breadcrumbsHTML strings.Builder
-	breadcrumbsHTML.WriteString(`<a href="/ui/" class="crumb" data-i18n="root">🏠 根目录 / Root</a>`)
-	if cleanRel != "" {
-		parts := strings.Split(cleanRel, "/")
-		accum := ""
-		for _, part := range parts {
-			if part == "" {
-				continue
-			}
-			if accum == "" {
-				accum = part
-			} else {
+	if isReadOnly {
+		breadcrumbsHTML.WriteString(`<a href="/public/" class="crumb" data-i18n="publicRoot">🌐 公开目录 / Public</a>`)
+		if cleanRel != "public" && strings.HasPrefix(cleanRel, "public/") {
+			subPath := strings.TrimPrefix(cleanRel, "public/")
+			parts := strings.Split(subPath, "/")
+			accum := "public"
+			for _, part := range parts {
+				if part == "" {
+					continue
+				}
 				accum += "/" + part
+				breadcrumbsHTML.WriteString(fmt.Sprintf(` <span class="crumb-sep">/</span> <a href="/%s/" class="crumb">%s</a>`, accum, part))
 			}
-			breadcrumbsHTML.WriteString(fmt.Sprintf(` <span class="crumb-sep">/</span> <a href="/ui/%s/" class="crumb">%s</a>`, accum, part))
+		}
+	} else {
+		breadcrumbsHTML.WriteString(`<a href="/" class="crumb" data-i18n="root">🏠 根目录 / Root</a>`)
+		if cleanRel != "" {
+			parts := strings.Split(cleanRel, "/")
+			accum := ""
+			for _, part := range parts {
+				if part == "" {
+					continue
+				}
+				if accum == "" {
+					accum = part
+				} else {
+					accum += "/" + part
+				}
+				breadcrumbsHTML.WriteString(fmt.Sprintf(` <span class="crumb-sep">/</span> <a href="/%s/" class="crumb">%s</a>`, accum, part))
+			}
 		}
 	}
 
 	var tableRowsHTML strings.Builder
 
-	if cleanRel != "" {
+	if isReadOnly {
+		if cleanRel != "public" && strings.HasPrefix(cleanRel, "public/") {
+			parentPath := filepath.Dir(cleanRel)
+			parentLink := "/public/"
+			if parentPath != "public" && parentPath != "." {
+				parentLink = "/" + parentPath + "/"
+			}
+			tableRowsHTML.WriteString(fmt.Sprintf(`
+			<tr class="parent-row">
+				<td class="icon-cell">📁</td>
+				<td colspan="3"><a href="%s" class="item-link parent-link" data-i18n="parentDir">.. (返回上一级 / Parent)</a></td>
+				<td></td>
+			</tr>`, parentLink))
+		}
+	} else if cleanRel != "" {
 		parentPath := filepath.Dir(cleanRel)
 		if parentPath == "." {
 			parentPath = ""
 		}
-		parentLink := "/ui/"
+		parentLink := "/"
 		if parentPath != "" {
-			parentLink = "/ui/" + parentPath + "/"
+			parentLink = "/" + parentPath + "/"
 		}
 		tableRowsHTML.WriteString(fmt.Sprintf(`
 		<tr class="parent-row">
@@ -1075,7 +1123,21 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
 
 	for _, entry := range pagedEntries {
 		name := entry.Name()
+		entryFullPath := filepath.Join(fullPath, name)
+		info, statErr := os.Stat(entryFullPath)
 		isDir := entry.IsDir()
+		var size int64
+		var modTime time.Time
+		if statErr == nil {
+			isDir = info.IsDir()
+			size = info.Size()
+			modTime = info.ModTime()
+		} else if linfo, lerr := entry.Info(); lerr == nil {
+			isDir = linfo.IsDir()
+			size = linfo.Size()
+			modTime = linfo.ModTime()
+		}
+
 		isHidden := strings.HasPrefix(name, ".")
 		icon := getFileIcon(name, isDir)
 		ext := strings.ToLower(filepath.Ext(name))
@@ -1084,7 +1146,7 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
 			if cleanRel != "" {
 				itemRelForIcon = cleanRel + "/" + name
 			}
-			icon = fmt.Sprintf(`<img src="/ui/%s" style="width:32px; height:32px; object-fit:cover; border-radius:4px; vertical-align:middle;" loading="lazy" decoding="async">`, itemRelForIcon)
+			icon = fmt.Sprintf(`<img src="/%s" style="width:32px; height:32px; object-fit:cover; border-radius:4px; vertical-align:middle;" loading="lazy" decoding="async">`, itemRelForIcon)
 		}
 
 		itemRel := name
@@ -1092,19 +1154,18 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
 			itemRel = cleanRel + "/" + name
 		}
 
-		itemLink := "/ui/" + itemRel
+		itemLink := "/" + itemRel
 		if isDir {
 			itemLink += "/"
 		}
 
-		info, _ := entry.Info()
 		sizeStr := "-"
 		modTimeStr := "-"
-		if info != nil {
-			modTimeStr = info.ModTime().Format("2006-01-02 15:04:05")
-			if !isDir {
-				sizeStr = formatSize(info.Size())
-			}
+		if !modTime.IsZero() {
+			modTimeStr = modTime.Format("2006-01-02 15:04:05")
+		}
+		if !isDir {
+			sizeStr = formatSize(size)
 		}
 
 		hideBtnText := "🔒 隐藏"
@@ -1115,20 +1176,28 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
 		}
 
 		var actionsHTML string
-		if isDir {
-			actionsHTML = fmt.Sprintf(`
-				<button class="fluent-btn fluent-btn-subtle btn-hide" onclick="toggleHideItem('%s', %t)" data-i18n="%s">%s</button>
-				<button class="fluent-btn fluent-btn-subtle btn-rename" onclick="promptRename('%s')" data-i18n="rename">✏️ 重命名</button>
-				<button class="fluent-btn fluent-btn-danger btn-delete" onclick="confirmDelete('%s', true)" data-i18n="delete">🗑️ 删除</button>
-			`, name, isHidden, hideBtnKey, hideBtnText, name, name)
+		if isReadOnly {
+			if !isDir {
+				actionsHTML = fmt.Sprintf(`
+					<a class="fluent-btn fluent-btn-accent btn-download" href="%s?download=1" download data-i18n="download">⬇️ 下载</a>
+				`, itemLink)
+			}
 		} else {
-			actionsHTML = fmt.Sprintf(`
-				<a class="fluent-btn fluent-btn-accent btn-download" href="%s?download=1" download data-i18n="download">⬇️ 下载</a>
-				<button class="fluent-btn fluent-btn-subtle btn-reupload" onclick="triggerReupload('%s')" data-i18n="reupload">🔄 重新上传</button>
-				<button class="fluent-btn fluent-btn-subtle btn-hide" onclick="toggleHideItem('%s', %t)" data-i18n="%s">%s</button>
-				<button class="fluent-btn fluent-btn-subtle btn-rename" onclick="promptRename('%s')" data-i18n="rename">✏️ 重命名</button>
-				<button class="fluent-btn fluent-btn-danger btn-delete" onclick="confirmDelete('%s', false)" data-i18n="delete">🗑️ 删除</button>
-			`, itemLink, name, name, isHidden, hideBtnKey, hideBtnText, name, name)
+			if isDir {
+				actionsHTML = fmt.Sprintf(`
+					<button class="fluent-btn fluent-btn-subtle btn-hide" onclick="toggleHideItem('%s', %t)" data-i18n="%s">%s</button>
+					<button class="fluent-btn fluent-btn-subtle btn-rename" onclick="promptRename('%s')" data-i18n="rename">✏️ 重命名</button>
+					<button class="fluent-btn fluent-btn-danger btn-delete" onclick="confirmDelete('%s', true)" data-i18n="delete">🗑️ 删除</button>
+				`, name, isHidden, hideBtnKey, hideBtnText, name, name)
+			} else {
+				actionsHTML = fmt.Sprintf(`
+					<a class="fluent-btn fluent-btn-accent btn-download" href="%s?download=1" download data-i18n="download">⬇️ 下载</a>
+					<button class="fluent-btn fluent-btn-subtle btn-reupload" onclick="triggerReupload('%s')" data-i18n="reupload">🔄 重新上传</button>
+					<button class="fluent-btn fluent-btn-subtle btn-hide" onclick="toggleHideItem('%s', %t)" data-i18n="%s">%s</button>
+					<button class="fluent-btn fluent-btn-subtle btn-rename" onclick="promptRename('%s')" data-i18n="rename">✏️ 重命名</button>
+					<button class="fluent-btn fluent-btn-danger btn-delete" onclick="confirmDelete('%s', false)" data-i18n="delete">🗑️ 删除</button>
+				`, itemLink, name, name, isHidden, hideBtnKey, hideBtnText, name, name)
+			}
 		}
 
 		linkClass := "file-link"
@@ -1153,6 +1222,25 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
 			<td class="meta-cell">%s</td>
 			<td class="actions-cell">%s</td>
 		</tr>`, name, hiddenAttr, hiddenClass, icon, itemLink, linkClass, name, badgeHTML, sizeStr, modTimeStr, actionsHTML))
+	}
+
+	var navTabsHTML string
+	if isReadOnly {
+		navTabsHTML = `<span class="fluent-badge fluent-badge-info" style="font-size:13px; padding:6px 12px;" data-i18n="publicBadge">🌐 公开共享 (只读 / Read Only)</span>`
+	} else {
+		navTabsHTML = `<button class="tab-btn active" id="tabFiles" onclick="switchMainTab('files')" data-i18n="filesTab">📁 文件管理</button>
+                    <button class="tab-btn" id="tabAlbum" onclick="switchMainTab('album')" data-i18n="albumTab">🖼️ 照片相册</button>
+                    <button class="tab-btn" id="tabBooks" onclick="switchMainTab('books')" data-i18n="booksTab">📚 书籍</button>`
+	}
+
+	var btnGroupHTML string
+	if isReadOnly {
+		btnGroupHTML = `<button class="fluent-btn fluent-btn-subtle" onclick="location.reload()" data-i18n="refresh">🔄 刷新</button>`
+	} else {
+		btnGroupHTML = `<button class="fluent-btn fluent-btn-accent" onclick="document.getElementById('fileInput').click()" data-i18n="upload">📤 上传文件</button>
+                    <button class="fluent-btn fluent-btn-subtle" onclick="promptCreateFolder()" data-i18n="mkdir">📁 新建目录</button>
+                    <button class="fluent-btn fluent-btn-subtle" onclick="toggleShowHidden()" id="toggleHiddenBtn" data-i18n="showHidden">👁️ 显示隐藏项目</button>
+                    <button class="fluent-btn fluent-btn-subtle" onclick="location.reload()" data-i18n="refresh">🔄 刷新</button>`
 	}
 
 	c.Header("Content-Type", "text/html; charset=utf-8")
@@ -1806,9 +1894,7 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
             <div class="brand">
                 <h1 data-i18n="title">🌌 Blackhole NAS</h1>
                 <div class="nav-tabs">
-                    <button class="tab-btn active" id="tabFiles" onclick="switchMainTab('files')" data-i18n="filesTab">📁 文件管理</button>
-                    <button class="tab-btn" id="tabAlbum" onclick="switchMainTab('album')" data-i18n="albumTab">🖼️ 照片相册</button>
-                    <button class="tab-btn" id="tabBooks" onclick="switchMainTab('books')" data-i18n="booksTab">📚 书籍</button>
+                    %s
                 </div>
             </div>
             <div class="header-controls">
@@ -1843,10 +1929,7 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
 
             <div class="action-bar">
                 <div class="btn-group">
-                    <button class="fluent-btn fluent-btn-accent" onclick="document.getElementById('fileInput').click()" data-i18n="upload">📤 上传文件</button>
-                    <button class="fluent-btn fluent-btn-subtle" onclick="promptCreateFolder()" data-i18n="mkdir">📁 新建目录</button>
-                    <button class="fluent-btn fluent-btn-subtle" onclick="toggleShowHidden()" id="toggleHiddenBtn" data-i18n="showHidden">👁️ 显示隐藏项目</button>
-                    <button class="fluent-btn fluent-btn-subtle" onclick="location.reload()" data-i18n="refresh">🔄 刷新</button>
+                    %s
                 </div>
                 <input type="text" id="searchInput" class="search-box" value="%s" placeholder="🔍 搜索此目录下项目..." data-i18n-placeholder="searchPlaceholder" oninput="filterTable()">
             </div>
@@ -2022,6 +2105,7 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
 
     <script>
     const currentPath = "%s";
+    const isReadOnly = %t;
 
     const i18n = {
         zh: {
@@ -2030,6 +2114,8 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
             albumTab: "🖼️ 照片相册",
             booksTab: "📚 书籍",
             root: "🏠 根目录",
+            publicRoot: "🌐 公开目录",
+            publicBadge: "🌐 公开共享 (只读)",
             upload: "📤 上传文件",
             mkdir: "📁 新建目录",
             refresh: "🔄 刷新",
@@ -2090,6 +2176,8 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
             albumTab: "🖼️ Gallery",
             booksTab: "📚 Books",
             root: "🏠 Root Directory",
+            publicRoot: "🌐 Public Directory",
+            publicBadge: "🌐 Public Share (Read Only)",
             upload: "📤 Upload File",
             mkdir: "📁 New Folder",
             refresh: "🔄 Refresh",
@@ -2172,18 +2260,25 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
     let bookSearchQuery = '';
 
     function switchMainTab(tab) {
+        if (isReadOnly && tab !== 'files') return;
         localStorage.setItem('blackhole_active_tab', tab);
         if (history.replaceState) {
             history.replaceState(null, null, '#' + tab);
         } else {
             window.location.hash = '#' + tab;
         }
-        document.getElementById('tabFiles').classList.toggle('active', tab === 'files');
-        document.getElementById('tabAlbum').classList.toggle('active', tab === 'album');
-        document.getElementById('tabBooks').classList.toggle('active', tab === 'books');
-        document.getElementById('filesView').style.display = tab === 'files' ? 'block' : 'none';
-        document.getElementById('albumView').style.display = tab === 'album' ? 'block' : 'none';
-        document.getElementById('booksView').style.display = tab === 'books' ? 'block' : 'none';
+        const tabFiles = document.getElementById('tabFiles');
+        const tabAlbum = document.getElementById('tabAlbum');
+        const tabBooks = document.getElementById('tabBooks');
+        if (tabFiles) tabFiles.classList.toggle('active', tab === 'files');
+        if (tabAlbum) tabAlbum.classList.toggle('active', tab === 'album');
+        if (tabBooks) tabBooks.classList.toggle('active', tab === 'books');
+        const filesView = document.getElementById('filesView');
+        const albumView = document.getElementById('albumView');
+        const booksView = document.getElementById('booksView');
+        if (filesView) filesView.style.display = tab === 'files' ? 'block' : 'none';
+        if (albumView) albumView.style.display = tab === 'album' ? 'block' : 'none';
+        if (booksView) booksView.style.display = tab === 'books' ? 'block' : 'none';
         if (tab === 'album') {
             loadAlbumPhotos(1);
             loadAlbumConfig();
@@ -3409,18 +3504,20 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
     document.addEventListener('DOMContentLoaded', () => {
         updateLanguageUI();
 
-        let savedTab = 'album';
-        if (window.location.hash === '#files') {
-            savedTab = 'files';
-        } else if (window.location.hash === '#album') {
-            savedTab = 'album';
-        } else if (window.location.hash === '#books') {
-            savedTab = 'books';
+        let savedTab = 'files';
+        if (!isReadOnly) {
+            if (window.location.hash === '#album') {
+                savedTab = 'album';
+            } else if (window.location.hash === '#books') {
+                savedTab = 'books';
+            } else {
+                savedTab = localStorage.getItem('blackhole_active_tab') || 'album';
+            }
+            switchMainTab(savedTab);
+            loadAlbumPhotos(1);
         } else {
-            savedTab = localStorage.getItem('blackhole_active_tab') || 'album';
+            switchMainTab('files');
         }
-        switchMainTab(savedTab);
-        loadAlbumPhotos(1);
 
         // Mouse Wheel Zoom & Drag Panning for Lightbox Viewport
         const viewport = document.getElementById('modalViewport');
@@ -3469,6 +3566,7 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
     });
 
     function pollSyncProgress() {
+        if (isReadOnly) return;
         fetch('/api/p2p/progress')
             .then(r => r.json())
             .then(data => {
@@ -3489,13 +3587,16 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
             .catch(() => {});
     }
 
-    setInterval(pollSyncProgress, 2500);
-    pollSyncProgress();
+    if (!isReadOnly) {
+        setInterval(pollSyncProgress, 2500);
+        pollSyncProgress();
+    }
 
     const dropZone = document.body;
     dropZone.addEventListener('dragover', (e) => { e.preventDefault(); });
     dropZone.addEventListener('drop', (e) => {
         e.preventDefault();
+        if (isReadOnly) return;
         if (e.dataTransfer.files && e.dataTransfer.files.length) {
             const activeTab = localStorage.getItem('blackhole_active_tab') || 'album';
             if (activeTab === 'books') {
@@ -3507,7 +3608,7 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
     });
     </script>
 </body>
-</html>`, cleanRel, breadcrumbsHTML.String(), searchQuery, tableRowsHTML.String(), filePaginationInfo, filePaginationControls.String(), cleanRel)
+</html>`, cleanRel, navTabsHTML, breadcrumbsHTML.String(), btnGroupHTML, searchQuery, tableRowsHTML.String(), filePaginationInfo, filePaginationControls.String(), cleanRel, isReadOnly)
 
 	c.String(http.StatusOK, html)
 }
