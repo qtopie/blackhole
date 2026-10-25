@@ -390,6 +390,117 @@ func TestAlbumAPIEndpoints(t *testing.T) {
 	}
 }
 
+func TestCustomDirectoryPhotoGallery(t *testing.T) {
+	r, tempDir, _ := setupTestRouter(t)
+	defer os.RemoveAll(tempDir)
+
+	customDir := filepath.Join(tempDir, "custom_gallery")
+	otherDir := filepath.Join(tempDir, "other_gallery")
+	os.MkdirAll(customDir, 0755)
+	os.MkdirAll(otherDir, 0755)
+
+	if err := createTestJPEG(filepath.Join(customDir, "img1.jpg"), 100, 100, false); err != nil {
+		t.Fatalf("failed to create img1: %v", err)
+	}
+	if err := createTestJPEG(filepath.Join(customDir, "img2.jpg"), 120, 80, false); err != nil {
+		t.Fatalf("failed to create img2: %v", err)
+	}
+	if err := createTestJPEG(filepath.Join(otherDir, "img3.jpg"), 90, 90, false); err != nil {
+		t.Fatalf("failed to create img3: %v", err)
+	}
+
+	// 1. Auto-scan and query customDir using relative path
+	req := httptest.NewRequest("GET", "/api/album/photos?dir=custom_gallery", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for custom gallery photos, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var customResp struct {
+		Status string `json:"status"`
+		Total  int    `json:"total"`
+		Dir    string `json:"dir"`
+		Photos []struct {
+			ID   string `json:"id"`
+			Path string `json:"path"`
+		} `json:"photos"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &customResp); err != nil {
+		t.Fatalf("failed to unmarshal custom gallery json: %v", err)
+	}
+	if customResp.Total != 2 || len(customResp.Photos) != 2 {
+		t.Fatalf("expected total 2 photos in custom_gallery, got total=%d len=%d", customResp.Total, len(customResp.Photos))
+	}
+	for _, p := range customResp.Photos {
+		if !strings.Contains(p.Path, "custom_gallery") {
+			t.Fatalf("expected photo path %s to belong to custom_gallery", p.Path)
+		}
+	}
+
+	// 2. Query otherDir using absolute path
+	req = httptest.NewRequest("GET", "/api/album/photos?dir="+otherDir, nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for other gallery photos, got %d: %s", w.Code, w.Body.String())
+	}
+	var otherResp struct {
+		Total  int `json:"total"`
+		Photos []struct {
+			ID string `json:"id"`
+		} `json:"photos"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &otherResp); err != nil || otherResp.Total != 1 {
+		t.Fatalf("expected 1 photo in otherDir, got total=%d, err=%v", otherResp.Total, err)
+	}
+
+	// 3. Scan customDir explicitly
+	scanBody, _ := json.Marshal(map[string]string{"dir": "custom_gallery"})
+	req = httptest.NewRequest("POST", "/api/album/scan", bytes.NewBuffer(scanBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "\"count\":2") {
+		t.Fatalf("expected 200 OK with count 2 for scan, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 4. Non-existent directory returns 400
+	req = httptest.NewRequest("GET", "/api/album/photos?dir=non_existent_folder_xyz", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for non-existent dir, got %d", w.Code)
+	}
+
+	// 5. Test photo file retrieval for custom directory photo
+	photoID := customResp.Photos[0].ID
+	req = httptest.NewRequest("GET", "/api/album/photos/"+photoID+"/file", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for custom photo file, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "image/jpeg") {
+		t.Fatalf("expected image/jpeg content type, got %s", ct)
+	}
+
+	// 6. Test RenderWebUI includes viewGallery button and switchDir UI
+	req = httptest.NewRequest("GET", "/", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for RenderWebUI, got %d", w.Code)
+	}
+	bodyStr := w.Body.String()
+	if !strings.Contains(bodyStr, "viewCurrentDirGallery") {
+		t.Fatalf("expected RenderWebUI to include viewCurrentDirGallery")
+	}
+	if !strings.Contains(bodyStr, "promptSwitchAlbumDir") {
+		t.Fatalf("expected RenderWebUI to include promptSwitchAlbumDir")
+	}
+}
+
 func TestUploadCheckInstant(t *testing.T) {
 	r, tempDir, _ := setupTestRouter(t)
 	defer os.RemoveAll(tempDir)

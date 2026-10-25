@@ -573,17 +573,77 @@ func (h *Handler) UpdateAlbumConfig(c *gin.Context) {
 	})
 }
 
+func (h *Handler) resolveDirectoryParam(c *gin.Context, rawDir string) (string, error) {
+	if rawDir == "" {
+		return "", nil
+	}
+
+	cleanDir := filepath.Clean(rawDir)
+
+	var fullPath string
+	if filepath.IsAbs(cleanDir) {
+		fullPath = cleanDir
+	} else {
+		fullPath = filepath.Join(h.shareDir, cleanDir)
+	}
+	fullPath = filepath.Clean(fullPath)
+
+	// Check if authenticated
+	if isAuth, exists := c.Get("authenticated"); exists {
+		if authenticated, ok := isAuth.(bool); ok && !authenticated {
+			publicPrefix := filepath.Join(h.shareDir, "public")
+			rel, err := filepath.Rel(publicPrefix, fullPath)
+			if err != nil || strings.HasPrefix(rel, "..") {
+				return "", fmt.Errorf("未认证访问仅允许查看 public 目录下的图片")
+			}
+		}
+	}
+
+	fi, err := os.Stat(fullPath)
+	if err != nil {
+		return "", fmt.Errorf("指定目录不存在: %v", err)
+	}
+	if !fi.IsDir() {
+		return "", fmt.Errorf("指定路径不是一个有效目录")
+	}
+
+	return fullPath, nil
+}
+
 func (h *Handler) ListAlbumPhotos(c *gin.Context) {
 	favOnly := c.Query("favorite") == "1" || c.Query("favorite") == "true"
 	darkOnly := c.Query("dark") == "1" || c.Query("dark_only") == "true"
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "25"))
+	rawDir := strings.TrimSpace(c.Query("dir"))
 
 	if page < 1 {
 		page = 1
 	}
 
-	photos, err := h.albumMgr.ListPhotosFiltered(favOnly, darkOnly)
+	var targetDir string
+	if rawDir != "" {
+		resolved, err := h.resolveDirectoryParam(c, rawDir)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		targetDir = resolved
+	}
+
+	var photos []*store.Photo
+	var err error
+
+	if targetDir != "" {
+		photos, err = h.albumMgr.ListPhotosInDirectory(targetDir, favOnly, darkOnly)
+		if err == nil && (len(photos) == 0 || c.Query("scan") == "1") {
+			_, _ = h.albumMgr.ScanDirectoryPath(targetDir)
+			photos, err = h.albumMgr.ListPhotosInDirectory(targetDir, favOnly, darkOnly)
+		}
+	} else {
+		photos, err = h.albumMgr.ListPhotosFiltered(favOnly, darkOnly)
+	}
+
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -623,20 +683,49 @@ func (h *Handler) ListAlbumPhotos(c *gin.Context) {
 		"limit":       limit,
 		"total_pages": totalPages,
 		"count":       len(pagedPhotos),
+		"dir":         targetDir,
 		"photos":      pagedPhotos,
 	})
 }
 
 func (h *Handler) ScanAlbumPhotos(c *gin.Context) {
-	count, err := h.albumMgr.ScanDirectory()
+	rawDir := strings.TrimSpace(c.Query("dir"))
+	if rawDir == "" {
+		var req struct {
+			Dir string `json:"dir"`
+		}
+		if err := c.ShouldBindJSON(&req); err == nil && req.Dir != "" {
+			rawDir = strings.TrimSpace(req.Dir)
+		}
+	}
+
+	var count int
+	var err error
+	var scannedDir string
+
+	if rawDir != "" {
+		targetDir, rErr := h.resolveDirectoryParam(c, rawDir)
+		if rErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": rErr.Error()})
+			return
+		}
+		count, err = h.albumMgr.ScanDirectoryPath(targetDir)
+		scannedDir = targetDir
+	} else {
+		count, err = h.albumMgr.ScanDirectory()
+		scannedDir = h.albumMgr.GetAlbumDir()
+	}
+
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "success",
 		"message": fmt.Sprintf("扫描完成，共索引 %d 项媒体", count),
 		"count":   count,
+		"dir":     scannedDir,
 	})
 }
 
@@ -696,6 +785,16 @@ func (h *Handler) BatchDeleteAlbumPhotos(c *gin.Context) {
 
 func (h *Handler) GetPhotoFile(c *gin.Context) {
 	id := c.Param("id")
+	p, err := h.albumMgr.GetPhoto(id)
+	if err == nil && p != nil {
+		if p.MIMEType != "" {
+			c.Header("Content-Type", p.MIMEType)
+		}
+		c.Header("Accept-Ranges", "bytes")
+		http.ServeFile(c.Writer, c.Request, p.Path)
+		return
+	}
+
 	photos, err := h.albumMgr.ListPhotos(false)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -716,42 +815,47 @@ func (h *Handler) GetPhotoFile(c *gin.Context) {
 
 func (h *Handler) GetPhotoThumbnail(c *gin.Context) {
 	id := c.Param("id")
-	photos, err := h.albumMgr.ListPhotos(false)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	p, err := h.albumMgr.GetPhoto(id)
+	if err != nil || p == nil {
+		photos, _ := h.albumMgr.ListPhotos(false)
+		for _, ph := range photos {
+			if ph.ID == id {
+				p = ph
+				break
+			}
+		}
+	}
+
+	if p == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "媒体项目未找到"})
 		return
 	}
-	for _, p := range photos {
-		if p.ID == id {
-			c.Header("Cache-Control", "public, max-age=86400")
-			c.Header("ETag", fmt.Sprintf("\"thumb-%s-%d\"", p.ID, p.Size))
 
-			if p.IsVideo {
-				c.Header("Content-Type", p.MIMEType)
-				c.Header("Accept-Ranges", "bytes")
-				http.ServeFile(c.Writer, c.Request, p.Path)
-				return
-			}
+	c.Header("Cache-Control", "public, max-age=86400")
+	c.Header("ETag", fmt.Sprintf("\"thumb-%s-%d\"", p.ID, p.Size))
 
-			thumbPath, err := h.albumMgr.EnsureThumbnail(p.Path, p.ID)
-			if err == nil && thumbPath != "" {
-				if fi, err := os.Stat(thumbPath); err == nil && fi.Size() > 0 {
-					c.Header("Content-Type", "image/jpeg")
-					http.ServeFile(c.Writer, c.Request, thumbPath)
-					return
-				}
-			}
+	if p.IsVideo {
+		c.Header("Content-Type", p.MIMEType)
+		c.Header("Accept-Ranges", "bytes")
+		http.ServeFile(c.Writer, c.Request, p.Path)
+		return
+	}
 
-			// Fallback: If thumbnail generation fails or is unavailable, serve original image
-			if p.MIMEType != "" {
-				c.Header("Content-Type", p.MIMEType)
-			}
-			c.Header("Accept-Ranges", "bytes")
-			http.ServeFile(c.Writer, c.Request, p.Path)
+	thumbPath, err := h.albumMgr.EnsureThumbnail(p.Path, p.ID)
+	if err == nil && thumbPath != "" {
+		if fi, err := os.Stat(thumbPath); err == nil && fi.Size() > 0 {
+			c.Header("Content-Type", "image/jpeg")
+			http.ServeFile(c.Writer, c.Request, thumbPath)
 			return
 		}
 	}
-	c.JSON(http.StatusNotFound, gin.H{"error": "媒体项目未找到"})
+
+	// Fallback: If thumbnail generation fails or is unavailable, serve original image
+	if p.MIMEType != "" {
+		c.Header("Content-Type", p.MIMEType)
+	}
+	c.Header("Accept-Ranges", "bytes")
+	http.ServeFile(c.Writer, c.Request, p.Path)
 }
 
 func (h *Handler) GetBooksConfig(c *gin.Context) {
@@ -1235,10 +1339,12 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
 
 	var btnGroupHTML string
 	if isReadOnly {
-		btnGroupHTML = `<button class="fluent-btn fluent-btn-subtle" onclick="location.reload()" data-i18n="refresh">🔄 刷新</button>`
+		btnGroupHTML = `<button class="fluent-btn fluent-btn-subtle" onclick="location.reload()" data-i18n="refresh">🔄 刷新</button>
+                    <button class="fluent-btn fluent-btn-accent" onclick="viewCurrentDirGallery()" data-i18n="viewGallery">🖼️ 查看图片合集</button>`
 	} else {
 		btnGroupHTML = `<button class="fluent-btn fluent-btn-accent" onclick="document.getElementById('fileInput').click()" data-i18n="upload">📤 上传文件</button>
                     <button class="fluent-btn fluent-btn-subtle" onclick="promptCreateFolder()" data-i18n="mkdir">📁 新建目录</button>
+                    <button class="fluent-btn fluent-btn-accent" onclick="viewCurrentDirGallery()" data-i18n="viewGallery">🖼️ 查看图片合集</button>
                     <button class="fluent-btn fluent-btn-subtle" onclick="toggleShowHidden()" id="toggleHiddenBtn" data-i18n="showHidden">👁️ 显示隐藏项目</button>
                     <button class="fluent-btn fluent-btn-subtle" onclick="location.reload()" data-i18n="refresh">🔄 刷新</button>`
 	}
@@ -1970,12 +2076,15 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
             <div class="action-bar">
                 <div class="btn-group">
                     <button class="fluent-btn fluent-btn-accent" onclick="scanAlbumPhotos()" data-i18n="scanAlbum">🔄 扫描相册目录</button>
+                    <button class="fluent-btn fluent-btn-subtle" onclick="promptSwitchAlbumDir()" data-i18n="switchDir">📂 切换目录</button>
+                    <button class="fluent-btn fluent-btn-subtle" onclick="resetToDefaultAlbum()" id="resetAlbumBtn" style="display:none;" data-i18n="defaultAlbum">🏠 默认相册</button>
+                    <button class="fluent-btn fluent-btn-subtle" onclick="backToFilesView()" id="backToFilesBtn" style="display:none;" data-i18n="backToFiles">📁 返回文件列表</button>
                     <button class="fluent-btn fluent-btn-subtle" onclick="toggleFavFilter()" id="favFilterBtn" data-i18n="favOnly">❤️ 仅看收藏</button>
                     <button class="fluent-btn fluent-btn-subtle" onclick="toggleDarkFilter()" id="darkFilterBtn" data-i18n="darkOnly">🖤 纯黑误拍废片</button>
                     <button class="fluent-btn fluent-btn-subtle" onclick="toggleBatchSelectMode()" id="batchSelectModeBtn">☑ 批量选择</button>
                     <button class="fluent-btn fluent-btn-subtle" onclick="toggleSelectAllPhotos()" id="selectAllBtn" style="display:none;" data-i18n="selectAll">☑ 全选当前页</button>
                     <button class="fluent-btn fluent-btn-danger" onclick="executeBatchDeletePhotos()" id="batchDeleteBtn" data-i18n="batchDelete">🗑️ 批量删除所选 (0)</button>
-                    <button class="fluent-btn fluent-btn-subtle" onclick="configAlbumDir()" data-i18n="setAlbumDir">⚙️ 设置相册路径</button>
+                    <button class="fluent-btn fluent-btn-subtle" onclick="configAlbumDir()" id="setAlbumDirBtn" data-i18n="setAlbumDir">⚙️ 设置默认相册</button>
                 </div>
                 <div class="album-dir-info" id="albumDirLabel" style="font-size:13px; color:var(--fluent-text-secondary);"></div>
             </div>
@@ -2135,7 +2244,12 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
             unhide: "👁️ 显示",
             scanAlbum: "🔄 扫描相册目录",
             favOnly: "❤️ 仅看收藏",
-            setAlbumDir: "⚙️ 设置相册路径",
+            viewGallery: "🖼️ 查看图片合集",
+            switchDir: "📂 切换目录",
+            defaultAlbum: "🏠 默认相册",
+            backToFiles: "📁 返回文件列表",
+            promptSwitchDir: "请输入要查看图片合集的目录路径（相对路径或绝对路径）：",
+            setAlbumDir: "⚙️ 设置默认相册",
             uploadBook: "📤 上传书籍",
             scanBooks: "🔄 扫描书籍目录",
             setBooksDir: "⚙️ 设置书籍路径",
@@ -2197,7 +2311,12 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
             unhide: "👁️ Unhide",
             scanAlbum: "🔄 Scan Gallery",
             favOnly: "❤️ Favorites Only",
-            setAlbumDir: "⚙️ Album Path",
+            viewGallery: "🖼️ View Image Gallery",
+            switchDir: "📂 Switch Directory",
+            defaultAlbum: "🏠 Default Gallery",
+            backToFiles: "📁 Back to Files",
+            promptSwitchDir: "Enter directory path to view image collection (relative or absolute):",
+            setAlbumDir: "⚙️ Default Album Path",
             uploadBook: "📤 Upload Book",
             scanBooks: "🔄 Scan Books",
             setBooksDir: "⚙️ Books Path",
@@ -2259,13 +2378,25 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
     let currentBooksDir = '';
     let bookSearchQuery = '';
 
-    function switchMainTab(tab) {
-        if (isReadOnly && tab !== 'files') return;
+    let activeGalleryDir = '';
+
+    function switchMainTab(tab, customDir) {
+        if (customDir !== undefined) {
+            activeGalleryDir = customDir;
+        }
+        if (isReadOnly && tab !== 'files') {
+            const allowed = activeGalleryDir && (activeGalleryDir.startsWith('public') || activeGalleryDir.startsWith('/public'));
+            if (!allowed) return;
+        }
         localStorage.setItem('blackhole_active_tab', tab);
+        let hashStr = '#' + tab;
+        if (tab === 'album' && activeGalleryDir) {
+            hashStr += '?dir=' + encodeURIComponent(activeGalleryDir);
+        }
         if (history.replaceState) {
-            history.replaceState(null, null, '#' + tab);
+            history.replaceState(null, null, hashStr);
         } else {
-            window.location.hash = '#' + tab;
+            window.location.hash = hashStr;
         }
         const tabFiles = document.getElementById('tabFiles');
         const tabAlbum = document.getElementById('tabAlbum');
@@ -2287,6 +2418,35 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
             loadBooks(1);
             loadBooksConfig();
         }
+    }
+
+    function viewCurrentDirGallery() {
+        switchMainTab('album', currentPath || '');
+    }
+
+    function backToFilesView() {
+        activeGalleryDir = '';
+        switchMainTab('files');
+    }
+
+    function resetToDefaultAlbum() {
+        activeGalleryDir = '';
+        loadAlbumPhotos(1);
+        loadAlbumConfig();
+    }
+
+    function promptSwitchAlbumDir() {
+        const langData = i18n[currentLang];
+        showInputDialog({
+            title: langData.switchDir || '📂 切换目录',
+            promptText: langData.promptSwitchDir || '请输入要查看图片合集的目录路径（相对路径或绝对路径）：',
+            defaultValue: activeGalleryDir || currentAlbumDir,
+            onConfirm: (newDir) => {
+                if (!newDir || !newDir.trim()) return;
+                activeGalleryDir = newDir.trim();
+                loadAlbumPhotos(1);
+            }
+        });
     }
 
     function updateLanguageUI() {
@@ -2473,13 +2633,34 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
         }
     }
 
+    function updateDirLabel(serverDir) {
+        const label = document.getElementById('albumDirLabel');
+        const resetBtn = document.getElementById('resetAlbumBtn');
+        const backBtn = document.getElementById('backToFilesBtn');
+        const setDirBtn = document.getElementById('setAlbumDirBtn');
+        const isCustom = !!activeGalleryDir;
+
+        if (resetBtn) resetBtn.style.display = isCustom ? '' : 'none';
+        if (backBtn) backBtn.style.display = isCustom ? '' : 'none';
+        if (setDirBtn) setDirBtn.style.display = isCustom ? 'none' : '';
+
+        if (label) {
+            const displayPath = serverDir || activeGalleryDir || currentAlbumDir;
+            if (isCustom) {
+                label.textContent = '📂 ' + displayPath + ' (当前合集)';
+            } else {
+                label.textContent = '📂 ' + displayPath + ' (默认相册)';
+            }
+        }
+    }
+
     function loadAlbumConfig() {
         fetch('/api/album/config')
             .then(r => r.json())
             .then(data => {
                 if (data.album_dir) {
                     currentAlbumDir = data.album_dir;
-                    document.getElementById('albumDirLabel').textContent = '📂 ' + data.album_dir;
+                    updateDirLabel();
                 }
             });
     }
@@ -2487,7 +2668,7 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
     function configAlbumDir() {
         const langData = i18n[currentLang];
         showInputDialog({
-            title: langData.setAlbumDir || '⚙️ 设置相册路径',
+            title: langData.setAlbumDir || '⚙️ 设置默认相册',
             promptText: langData.promptAlbumDir || '请输入默认相册存储路径：',
             defaultValue: currentAlbumDir,
             onConfirm: (newDir) => {
@@ -2500,6 +2681,7 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
                 .then(r => r.json())
                 .then(data => {
                     if (data.status === 'success') {
+                        activeGalleryDir = '';
                         loadAlbumConfig();
                         scanAlbumPhotos();
                     } else {
@@ -2512,9 +2694,12 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
 
     function loadAlbumPhotos(page = albumPage) {
         albumPage = page;
-        const url = '/api/album/photos?favorite=' + (favFilterState ? '1' : '0') +
+        let url = '/api/album/photos?favorite=' + (favFilterState ? '1' : '0') +
                     '&dark=' + (darkFilterState ? '1' : '0') +
                     '&page=' + albumPage + '&limit=' + albumPageSize;
+        if (activeGalleryDir) {
+            url += '&dir=' + encodeURIComponent(activeGalleryDir);
+        }
 
         fetch(url, { credentials: 'same-origin' })
             .then(r => {
@@ -2525,6 +2710,7 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
                 currentPhotosList = data.photos || [];
                 albumTotalPhotos = data.total || currentPhotosList.length;
                 albumTotalPages = data.total_pages || 1;
+                updateDirLabel(data.dir);
                 renderPhotosGrid();
                 renderPaginationUI();
                 updateBatchDeleteBtnUI();
@@ -2583,7 +2769,12 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
         status.className = 'status-box status-info';
         status.textContent = '⏳ 正在扫描相册目录中...';
 
-        fetch('/api/album/scan', { method: 'POST' })
+        let url = '/api/album/scan';
+        if (activeGalleryDir) {
+            url += '?dir=' + encodeURIComponent(activeGalleryDir);
+        }
+
+        fetch(url, { method: 'POST' })
             .then(r => r.json())
             .then(data => {
                 status.className = 'status-box status-success';
@@ -3505,18 +3696,23 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
         updateLanguageUI();
 
         let savedTab = 'files';
-        if (!isReadOnly) {
-            if (window.location.hash === '#album') {
-                savedTab = 'album';
-            } else if (window.location.hash === '#books') {
-                savedTab = 'books';
-            } else {
-                savedTab = localStorage.getItem('blackhole_active_tab') || 'album';
+        if (window.location.hash.startsWith('#album')) {
+            savedTab = 'album';
+            const hashParts = window.location.hash.split('?');
+            if (hashParts.length > 1) {
+                const params = new URLSearchParams(hashParts[1]);
+                if (params.get('dir')) {
+                    activeGalleryDir = params.get('dir');
+                }
             }
-            switchMainTab(savedTab);
+        } else if (window.location.hash === '#books') {
+            savedTab = 'books';
+        } else if (!isReadOnly) {
+            savedTab = localStorage.getItem('blackhole_active_tab') || 'album';
+        }
+        switchMainTab(savedTab);
+        if (savedTab === 'album') {
             loadAlbumPhotos(1);
-        } else {
-            switchMainTab('files');
         }
 
         // Mouse Wheel Zoom & Drag Panning for Lightbox Viewport

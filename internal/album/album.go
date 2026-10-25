@@ -89,20 +89,25 @@ func generateID(relPath string) string {
 }
 
 func (m *Manager) ScanDirectory() (int, error) {
-	currentDir := m.GetAlbumDir()
-	if _, err := os.Stat(currentDir); os.IsNotExist(err) {
-		return 0, fmt.Errorf("album directory does not exist: %s", currentDir)
+	return m.ScanDirectoryPath(m.GetAlbumDir())
+}
+
+func (m *Manager) ScanDirectoryPath(targetDir string) (int, error) {
+	cleanDir := filepath.Clean(targetDir)
+	if _, err := os.Stat(cleanDir); os.IsNotExist(err) {
+		return 0, fmt.Errorf("directory does not exist: %s", cleanDir)
 	}
 
+	currentAlbumDir := m.GetAlbumDir()
 	scannedCount := 0
-	err := filepath.Walk(currentDir, func(path string, info os.FileInfo, err error) error {
+	err := filepath.Walk(cleanDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
 
 		if info.IsDir() {
 			name := info.Name()
-			if path != currentDir && (strings.HasPrefix(name, ".") || name == "thumbnails") {
+			if path != cleanDir && (strings.HasPrefix(name, ".") || name == "thumbnails") {
 				return filepath.SkipDir
 			}
 			return nil
@@ -122,12 +127,17 @@ func (m *Manager) ScanDirectory() (int, error) {
 			mediaType = "video"
 		}
 
-		relPath, err := filepath.Rel(currentDir, path)
+		relPath, err := filepath.Rel(cleanDir, path)
 		if err != nil {
 			relPath = info.Name()
 		}
 
-		photoID := generateID(relPath)
+		var photoID string
+		if cleanDir == currentAlbumDir {
+			photoID = generateID(relPath)
+		} else {
+			photoID = generateID(path)
+		}
 		width, height := 0, 0
 
 		if !isVideo && info.Size() < 5*1024*1024 {
@@ -254,18 +264,38 @@ func (m *Manager) FindPhotoByHash(hash string, size int64) *store.Photo {
 	return m.store.FindPhotoByHashOrSize(hash, size)
 }
 
+func (m *Manager) GetPhoto(photoID string) (*store.Photo, error) {
+	return m.store.GetPhoto(photoID)
+}
+
 func (m *Manager) ListPhotos(favoriteOnly bool) ([]*store.Photo, error) {
 	return m.ListPhotosFiltered(favoriteOnly, false)
 }
 
 func (m *Manager) ListPhotosFiltered(favoriteOnly, darkOnly bool) ([]*store.Photo, error) {
+	return m.ListPhotosInDirectory("", favoriteOnly, darkOnly)
+}
+
+func (m *Manager) ListPhotosInDirectory(targetDir string, favoriteOnly, darkOnly bool) ([]*store.Photo, error) {
 	all, err := m.store.ListPhotos()
 	if err != nil {
 		return nil, err
 	}
 
+	var cleanTarget string
+	if targetDir != "" {
+		cleanTarget = filepath.Clean(targetDir)
+	}
+
 	result := make([]*store.Photo, 0, len(all))
 	for _, p := range all {
+		if cleanTarget != "" {
+			cleanPhotoPath := filepath.Clean(p.Path)
+			rel, err := filepath.Rel(cleanTarget, cleanPhotoPath)
+			if err != nil || strings.HasPrefix(rel, "..") {
+				continue
+			}
+		}
 		if favoriteOnly && !p.IsFavorite {
 			continue
 		}

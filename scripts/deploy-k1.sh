@@ -8,11 +8,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 go build -o bin/blackhole-server-riscv64
 
 echo "📦 传输文件至 SpacemiT K1 开发板 ($K1_HOST)..."
 ssh root@$K1_HOST "mkdir -p /opt/blackhole /var/nas_share"
-scp bin/blackhole-server-riscv64 root@$K1_HOST:/opt/blackhole/blackhole-server
+scp bin/blackhole-server-riscv64 root@$K1_HOST:/opt/blackhole/blackhole-server.new
+ssh root@$K1_HOST "systemctl stop blackhole || true; mv -f /opt/blackhole/blackhole-server.new /opt/blackhole/blackhole-server"
 scp blackhole.service root@$K1_HOST:/etc/systemd/system/blackhole.service
 
 echo "⚙️ 在 K1 上配置并启动 Systemd 服务..."
-ssh root@$K1_HOST "chmod +x /opt/blackhole/blackhole-server && systemctl daemon-reload && systemctl enable --now blackhole"
+ssh root@$K1_HOST "chmod +x /opt/blackhole/blackhole-server && systemctl daemon-reload && systemctl restart blackhole && systemctl enable blackhole"
 
 echo "✅ 部署完成！查看状态..."
 ssh root@$K1_HOST "systemctl status blackhole --no-pager"
