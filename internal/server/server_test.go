@@ -330,3 +330,74 @@ func TestPublicRoute_AuthenticatedAdminAccess(t *testing.T) {
 		t.Fatalf("expected authorized.txt to be deleted")
 	}
 }
+
+// SPEC-GALLERY-001 & SPEC-GALLERY-002: 开放模式与隐藏模式相册访问控制
+func TestOpenModeAndHiddenModeGalleryAccess(t *testing.T) {
+	srv, shareDir, extDir := setupTestServer(t)
+	defer os.RemoveAll(shareDir)
+	defer os.RemoveAll(extDir)
+
+	publicDir := filepath.Join(shareDir, "public")
+	publicWallpapers := filepath.Join(publicDir, "wallpapers")
+	_ = os.MkdirAll(publicWallpapers, 0755)
+
+	photosDir := filepath.Join(shareDir, "photos")
+	_ = os.MkdirAll(photosDir, 0755)
+
+	relexDir := filepath.Join(shareDir, ".relex")
+	_ = os.MkdirAll(relexDir, 0755)
+
+	_ = os.WriteFile(filepath.Join(publicWallpapers, "pub.jpg"), []byte("pub image"), 0644)
+	_ = os.WriteFile(filepath.Join(photosDir, "priv.jpg"), []byte("priv image"), 0644)
+	_ = os.WriteFile(filepath.Join(relexDir, "secret.jpg"), []byte("secret image"), 0644)
+
+	// 1. 开放模式（未认证）访问私有默认相册 -> 401 Unauthorized
+	req := httptest.NewRequest("GET", "/api/album/photos", nil)
+	w := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for anonymous default album, got %d", w.Code)
+	}
+
+	// 2. 开放模式（未认证）访问私有目录 photos -> 401 Unauthorized
+	req = httptest.NewRequest("GET", "/api/album/photos?dir=photos", nil)
+	w = httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for anonymous private dir, got %d", w.Code)
+	}
+
+	// 3. 开放模式（未认证）访问私密隐藏目录 .relex -> 401 Unauthorized
+	req = httptest.NewRequest("GET", "/api/album/photos?dir=.relex", nil)
+	w = httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for anonymous hidden dir, got %d", w.Code)
+	}
+
+	// 4. 开放模式（未认证）访问公开目录 public/wallpapers -> 200 OK
+	req = httptest.NewRequest("GET", "/api/album/photos?dir=public/wallpapers", nil)
+	w = httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for anonymous public gallery, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 5. 认证用户在隐藏模式关闭 (show_hidden=0) 下访问 .relex -> 403 Forbidden
+	req = httptest.NewRequest("GET", "/api/album/photos?dir=.relex&show_hidden=0", nil)
+	req.SetBasicAuth("admin", "blackhole")
+	w = httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for auth hidden dir with show_hidden=0, got %d", w.Code)
+	}
+
+	// 6. 认证用户在隐藏模式开启 (show_hidden=1) 下访问 .relex -> 200 OK
+	req = httptest.NewRequest("GET", "/api/album/photos?dir=.relex&show_hidden=1", nil)
+	req.SetBasicAuth("admin", "blackhole")
+	w = httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for auth hidden dir with show_hidden=1, got %d: %s", w.Code, w.Body.String())
+	}
+}

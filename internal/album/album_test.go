@@ -120,7 +120,7 @@ func TestScanDirectoryPathAndListInDirectory(t *testing.T) {
 	}
 
 	// List photos in dirA only
-	photosA, err := mgr.ListPhotosInDirectory(dirA, false, false)
+	photosA, err := mgr.ListPhotosInDirectory(dirA, false, false, false)
 	if err != nil || len(photosA) != 2 {
 		t.Fatalf("expected 2 photos in ListPhotosInDirectory(dirA), got %d (err: %v)", len(photosA), err)
 	}
@@ -131,7 +131,7 @@ func TestScanDirectoryPathAndListInDirectory(t *testing.T) {
 	}
 
 	// List photos in dirB only
-	photosB, err := mgr.ListPhotosInDirectory(dirB, false, false)
+	photosB, err := mgr.ListPhotosInDirectory(dirB, false, false, false)
 	if err != nil || len(photosB) != 3 {
 		t.Fatalf("expected 3 photos in ListPhotosInDirectory(dirB), got %d (err: %v)", len(photosB), err)
 	}
@@ -139,6 +139,36 @@ func TestScanDirectoryPathAndListInDirectory(t *testing.T) {
 		if !strings.HasPrefix(p.Path, dirB) {
 			t.Fatalf("photo path %s should start with dirB %s", p.Path, dirB)
 		}
+	}
+
+	// Test Hidden Directory Isolation
+	hiddenDir := filepath.Join(tempDir, ".hidden_relex")
+	os.MkdirAll(hiddenDir, 0755)
+	createSampleImage(t, hiddenDir, "secret.jpg")
+	countH, err := mgr.ScanDirectoryPath(hiddenDir)
+	if err != nil || countH != 1 {
+		t.Fatalf("expected 1 photo scanned in hiddenDir, got %d (err: %v)", countH, err)
+	}
+
+	// With showHidden=false, hidden photos must NOT be returned in hiddenDir or default album
+	photosHHidden, err := mgr.ListPhotosInDirectory(hiddenDir, false, false, false)
+	if err != nil || len(photosHHidden) != 0 {
+		t.Fatalf("expected 0 photos when showHidden=false for hiddenDir, got %d", len(photosHHidden))
+	}
+	defaultPhotos, err := mgr.ListPhotos(false)
+	if err != nil {
+		t.Fatalf("failed to list default photos: %v", err)
+	}
+	for _, p := range defaultPhotos {
+		if IsHiddenPath(p.Path) {
+			t.Fatalf("default photos should never contain hidden path: %s", p.Path)
+		}
+	}
+
+	// With showHidden=true, hidden photos are returned
+	photosHVisible, err := mgr.ListPhotosInDirectory(hiddenDir, false, false, true)
+	if err != nil || len(photosHVisible) != 1 {
+		t.Fatalf("expected 1 photo when showHidden=true for hiddenDir, got %d", len(photosHVisible))
 	}
 
 	// Verify GetPhoto O(1)

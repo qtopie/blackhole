@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -28,6 +29,11 @@ type SysInfoResponse struct {
 	FreeGB      uint64 `json:"free_gb"`
 	UsedPercent string `json:"used_percent"`
 }
+
+var (
+	errUnauthorized    = errors.New("unauthorized")
+	errHiddenForbidden = errors.New("hidden_forbidden")
+)
 
 type PathRequest struct {
 	Path string `json:"path" form:"path"`
@@ -573,7 +579,7 @@ func (h *Handler) UpdateAlbumConfig(c *gin.Context) {
 	})
 }
 
-func (h *Handler) resolveDirectoryParam(c *gin.Context, rawDir string) (string, error) {
+func (h *Handler) resolveDirectoryParam(c *gin.Context, rawDir string, showHidden bool) (string, error) {
 	if rawDir == "" {
 		return "", nil
 	}
@@ -594,9 +600,14 @@ func (h *Handler) resolveDirectoryParam(c *gin.Context, rawDir string) (string, 
 			publicPrefix := filepath.Join(h.shareDir, "public")
 			rel, err := filepath.Rel(publicPrefix, fullPath)
 			if err != nil || strings.HasPrefix(rel, "..") {
-				return "", fmt.Errorf("未认证访问仅允许查看 public 目录下的图片")
+				return "", errUnauthorized
 			}
 		}
+	}
+
+	// Check hidden directory access control
+	if album.IsHiddenPath(fullPath) && !showHidden {
+		return "", errHiddenForbidden
 	}
 
 	fi, err := os.Stat(fullPath)
@@ -613,6 +624,7 @@ func (h *Handler) resolveDirectoryParam(c *gin.Context, rawDir string) (string, 
 func (h *Handler) ListAlbumPhotos(c *gin.Context) {
 	favOnly := c.Query("favorite") == "1" || c.Query("favorite") == "true"
 	darkOnly := c.Query("dark") == "1" || c.Query("dark_only") == "true"
+	showHidden := c.Query("show_hidden") == "1" || c.Query("show_hidden") == "true"
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "25"))
 	rawDir := strings.TrimSpace(c.Query("dir"))
@@ -621,27 +633,42 @@ func (h *Handler) ListAlbumPhotos(c *gin.Context) {
 		page = 1
 	}
 
+	// Open Mode (未认证访客) check:
+	isAuth, exists := c.Get("authenticated")
+	authenticated := exists && isAuth.(bool)
+	if exists && !authenticated {
+		if rawDir == "" {
+			c.Header("WWW-Authenticate", `Basic realm="Restricted"`)
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "开放模式下无法查看私有相册，请先登录"})
+			return
+		}
+	}
+
 	var targetDir string
 	if rawDir != "" {
-		resolved, err := h.resolveDirectoryParam(c, rawDir)
+		resolved, err := h.resolveDirectoryParam(c, rawDir, showHidden)
 		if err != nil {
+			if errors.Is(err, errHiddenForbidden) {
+				c.JSON(http.StatusForbidden, gin.H{"error": "私密隐藏模式已关闭，无法查看私有/隐藏目录相册，请先开启显示隐藏项目"})
+				return
+			}
+			if errors.Is(err, errUnauthorized) {
+				c.Header("WWW-Authenticate", `Basic realm="Restricted"`)
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "开放模式下无法查看私有目录相册"})
+				return
+			}
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
 		targetDir = resolved
+	} else {
+		targetDir = h.albumMgr.GetAlbumDir()
 	}
 
-	var photos []*store.Photo
-	var err error
-
-	if targetDir != "" {
-		photos, err = h.albumMgr.ListPhotosInDirectory(targetDir, favOnly, darkOnly)
-		if err == nil && (len(photos) == 0 || c.Query("scan") == "1") {
-			_, _ = h.albumMgr.ScanDirectoryPath(targetDir)
-			photos, err = h.albumMgr.ListPhotosInDirectory(targetDir, favOnly, darkOnly)
-		}
-	} else {
-		photos, err = h.albumMgr.ListPhotosFiltered(favOnly, darkOnly)
+	photos, err := h.albumMgr.ListPhotosInDirectory(targetDir, favOnly, darkOnly, showHidden)
+	if err == nil && (len(photos) == 0 || c.Query("scan") == "1") {
+		_, _ = h.albumMgr.ScanDirectoryPath(targetDir)
+		photos, err = h.albumMgr.ListPhotosInDirectory(targetDir, favOnly, darkOnly, showHidden)
 	}
 
 	if err != nil {
@@ -689,14 +716,29 @@ func (h *Handler) ListAlbumPhotos(c *gin.Context) {
 }
 
 func (h *Handler) ScanAlbumPhotos(c *gin.Context) {
+	showHidden := c.Query("show_hidden") == "1" || c.Query("show_hidden") == "true"
 	rawDir := strings.TrimSpace(c.Query("dir"))
 	if rawDir == "" {
 		var req struct {
-			Dir string `json:"dir"`
+			Dir        string `json:"dir"`
+			ShowHidden bool   `json:"show_hidden"`
 		}
-		if err := c.ShouldBindJSON(&req); err == nil && req.Dir != "" {
-			rawDir = strings.TrimSpace(req.Dir)
+		if err := c.ShouldBindJSON(&req); err == nil {
+			if req.Dir != "" {
+				rawDir = strings.TrimSpace(req.Dir)
+			}
+			if req.ShowHidden {
+				showHidden = true
+			}
 		}
+	}
+
+	isAuth, exists := c.Get("authenticated")
+	authenticated := exists && isAuth.(bool)
+	if exists && !authenticated {
+		c.Header("WWW-Authenticate", `Basic realm="Restricted"`)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "开放模式下禁止扫描相册"})
+		return
 	}
 
 	var count int
@@ -704,8 +746,12 @@ func (h *Handler) ScanAlbumPhotos(c *gin.Context) {
 	var scannedDir string
 
 	if rawDir != "" {
-		targetDir, rErr := h.resolveDirectoryParam(c, rawDir)
+		targetDir, rErr := h.resolveDirectoryParam(c, rawDir, showHidden)
 		if rErr != nil {
+			if errors.Is(rErr, errHiddenForbidden) {
+				c.JSON(http.StatusForbidden, gin.H{"error": "私密隐藏模式已关闭，无法扫描私有/隐藏目录，请先开启显示隐藏项目"})
+				return
+			}
 			c.JSON(http.StatusBadRequest, gin.H{"error": rErr.Error()})
 			return
 		}
@@ -785,36 +831,8 @@ func (h *Handler) BatchDeleteAlbumPhotos(c *gin.Context) {
 
 func (h *Handler) GetPhotoFile(c *gin.Context) {
 	id := c.Param("id")
-	p, err := h.albumMgr.GetPhoto(id)
-	if err == nil && p != nil {
-		if p.MIMEType != "" {
-			c.Header("Content-Type", p.MIMEType)
-		}
-		c.Header("Accept-Ranges", "bytes")
-		http.ServeFile(c.Writer, c.Request, p.Path)
-		return
-	}
+	showHidden := c.Query("show_hidden") == "1" || c.Query("show_hidden") == "true"
 
-	photos, err := h.albumMgr.ListPhotos(false)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	for _, p := range photos {
-		if p.ID == id {
-			if p.MIMEType != "" {
-				c.Header("Content-Type", p.MIMEType)
-			}
-			c.Header("Accept-Ranges", "bytes")
-			http.ServeFile(c.Writer, c.Request, p.Path)
-			return
-		}
-	}
-	c.JSON(http.StatusNotFound, gin.H{"error": "媒体项目未找到"})
-}
-
-func (h *Handler) GetPhotoThumbnail(c *gin.Context) {
-	id := c.Param("id")
 	p, err := h.albumMgr.GetPhoto(id)
 	if err != nil || p == nil {
 		photos, _ := h.albumMgr.ListPhotos(false)
@@ -828,6 +846,71 @@ func (h *Handler) GetPhotoThumbnail(c *gin.Context) {
 
 	if p == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "媒体项目未找到"})
+		return
+	}
+
+	// 1. Open Mode check
+	if isAuth, exists := c.Get("authenticated"); exists {
+		if authenticated, ok := isAuth.(bool); ok && !authenticated {
+			publicPrefix := filepath.Join(h.shareDir, "public")
+			rel, err := filepath.Rel(publicPrefix, p.Path)
+			if err != nil || strings.HasPrefix(rel, "..") {
+				c.Header("WWW-Authenticate", `Basic realm="Restricted"`)
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "开放模式下无法查看私有媒体"})
+				return
+			}
+		}
+	}
+
+	// 2. Hidden Mode check
+	if album.IsHiddenPath(p.Path) && !showHidden {
+		c.JSON(http.StatusForbidden, gin.H{"error": "私密隐藏模式已关闭，无法访问私密媒体"})
+		return
+	}
+
+	if p.MIMEType != "" {
+		c.Header("Content-Type", p.MIMEType)
+	}
+	c.Header("Accept-Ranges", "bytes")
+	http.ServeFile(c.Writer, c.Request, p.Path)
+}
+
+func (h *Handler) GetPhotoThumbnail(c *gin.Context) {
+	id := c.Param("id")
+	showHidden := c.Query("show_hidden") == "1" || c.Query("show_hidden") == "true"
+
+	p, err := h.albumMgr.GetPhoto(id)
+	if err != nil || p == nil {
+		photos, _ := h.albumMgr.ListPhotos(false)
+		for _, ph := range photos {
+			if ph.ID == id {
+				p = ph
+				break
+			}
+		}
+	}
+
+	if p == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "媒体项目未找到"})
+		return
+	}
+
+	// 1. Open Mode check
+	if isAuth, exists := c.Get("authenticated"); exists {
+		if authenticated, ok := isAuth.(bool); ok && !authenticated {
+			publicPrefix := filepath.Join(h.shareDir, "public")
+			rel, err := filepath.Rel(publicPrefix, p.Path)
+			if err != nil || strings.HasPrefix(rel, "..") {
+				c.Header("WWW-Authenticate", `Basic realm="Restricted"`)
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "开放模式下无法查看私有媒体"})
+				return
+			}
+		}
+	}
+
+	// 2. Hidden Mode check
+	if album.IsHiddenPath(p.Path) && !showHidden {
+		c.JSON(http.StatusForbidden, gin.H{"error": "私密隐藏模式已关闭，无法访问私密媒体"})
 		return
 	}
 
@@ -2421,6 +2504,11 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
     }
 
     function viewCurrentDirGallery() {
+        const isHidden = (currentPath || '').split('/').some(p => p.startsWith('.'));
+        if (isHidden && !showHiddenState) {
+            alert('私密隐藏模式已关闭，无法查看私有/隐藏目录相册！请先点击「👁️ 显示隐藏项目」开启隐藏模式。');
+            return;
+        }
         switchMainTab('album', currentPath || '');
     }
 
@@ -2443,7 +2531,13 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
             defaultValue: activeGalleryDir || currentAlbumDir,
             onConfirm: (newDir) => {
                 if (!newDir || !newDir.trim()) return;
-                activeGalleryDir = newDir.trim();
+                const trimmed = newDir.trim();
+                const isHidden = trimmed.split('/').some(p => p.startsWith('.'));
+                if (isHidden && !showHiddenState) {
+                    alert('私密隐藏模式已关闭，无法查看私有/隐藏目录相册！请先点击「👁️ 显示隐藏项目」开启隐藏模式。');
+                    return;
+                }
+                activeGalleryDir = trimmed;
                 loadAlbumPhotos(1);
             }
         });
@@ -2494,6 +2588,9 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
         localStorage.setItem('blackhole_show_hidden', showHiddenState);
         updateHiddenBtnUI();
         filterTable();
+        if (document.getElementById('albumView') && document.getElementById('albumView').style.display !== 'none') {
+            loadAlbumPhotos(1);
+        }
     }
 
     async function toggleHideItem(name, isCurrentlyHidden) {
@@ -2696,7 +2793,8 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
         albumPage = page;
         let url = '/api/album/photos?favorite=' + (favFilterState ? '1' : '0') +
                     '&dark=' + (darkFilterState ? '1' : '0') +
-                    '&page=' + albumPage + '&limit=' + albumPageSize;
+                    '&page=' + albumPage + '&limit=' + albumPageSize +
+                    '&show_hidden=' + (showHiddenState ? '1' : '0');
         if (activeGalleryDir) {
             url += '&dir=' + encodeURIComponent(activeGalleryDir);
         }
@@ -2769,9 +2867,9 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
         status.className = 'status-box status-info';
         status.textContent = '⏳ 正在扫描相册目录中...';
 
-        let url = '/api/album/scan';
+        let url = '/api/album/scan?show_hidden=' + (showHiddenState ? '1' : '0');
         if (activeGalleryDir) {
-            url += '?dir=' + encodeURIComponent(activeGalleryDir);
+            url += '&dir=' + encodeURIComponent(activeGalleryDir);
         }
 
         fetch(url, { method: 'POST' })
@@ -2932,8 +3030,12 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
 
         let html = '';
         currentPhotosList.forEach(p => {
-            const fileUrl = '/api/album/photos/' + p.id + '/file';
-            const thumbUrl = '/api/album/photos/' + p.id + '/thumbnail';
+            let fileUrl = '/api/album/photos/' + p.id + '/file';
+            let thumbUrl = '/api/album/photos/' + p.id + '/thumbnail';
+            if (showHiddenState) {
+                fileUrl += '?show_hidden=1';
+                thumbUrl += '?show_hidden=1';
+            }
             const favBadge = p.is_favorite ? '<div class="fav-badge">❤️</div>' : '';
             const darkBadge = p.is_dark ? '<div class="dark-badge">🖤 纯黑</div>' : '';
             const isChecked = selectedPhotoIDs.has(p.id);
@@ -3349,9 +3451,12 @@ func (h *Handler) RenderWebUI(c *gin.Context) {
 
         resetTransformState();
 
-        const fileUrl = '/api/album/photos/' + photo.id + '/file';
+        let fileUrl = '/api/album/photos/' + photo.id + '/file';
+        if (showHiddenState) {
+            fileUrl += '?show_hidden=1';
+        }
         document.getElementById('modalPhotoTitle').textContent = photo.filename;
-        document.getElementById('modalDownloadBtn').href = fileUrl + '?download=1';
+        document.getElementById('modalDownloadBtn').href = fileUrl + (showHiddenState ? '&download=1' : '?download=1');
         document.getElementById('modalViewOriginalBtn').href = fileUrl;
         document.getElementById('modalFavBtn').textContent = photo.is_favorite ? '💔 取消收藏' : '❤️ 收藏';
         

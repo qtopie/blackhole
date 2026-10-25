@@ -264,6 +264,20 @@ func (m *Manager) FindPhotoByHash(hash string, size int64) *store.Photo {
 	return m.store.FindPhotoByHashOrSize(hash, size)
 }
 
+func IsHiddenPath(p string) bool {
+	clean := filepath.Clean(p)
+	parts := strings.Split(clean, string(filepath.Separator))
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			continue
+		}
+		if strings.HasPrefix(part, ".") {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *Manager) GetPhoto(photoID string) (*store.Photo, error) {
 	return m.store.GetPhoto(photoID)
 }
@@ -273,10 +287,10 @@ func (m *Manager) ListPhotos(favoriteOnly bool) ([]*store.Photo, error) {
 }
 
 func (m *Manager) ListPhotosFiltered(favoriteOnly, darkOnly bool) ([]*store.Photo, error) {
-	return m.ListPhotosInDirectory("", favoriteOnly, darkOnly)
+	return m.ListPhotosInDirectory(m.GetAlbumDir(), favoriteOnly, darkOnly, false)
 }
 
-func (m *Manager) ListPhotosInDirectory(targetDir string, favoriteOnly, darkOnly bool) ([]*store.Photo, error) {
+func (m *Manager) ListPhotosInDirectory(targetDir string, favoriteOnly, darkOnly, showHidden bool) ([]*store.Photo, error) {
 	all, err := m.store.ListPhotos()
 	if err != nil {
 		return nil, err
@@ -285,16 +299,21 @@ func (m *Manager) ListPhotosInDirectory(targetDir string, favoriteOnly, darkOnly
 	var cleanTarget string
 	if targetDir != "" {
 		cleanTarget = filepath.Clean(targetDir)
+	} else {
+		cleanTarget = filepath.Clean(m.GetAlbumDir())
 	}
 
 	result := make([]*store.Photo, 0, len(all))
 	for _, p := range all {
+		cleanPhotoPath := filepath.Clean(p.Path)
 		if cleanTarget != "" {
-			cleanPhotoPath := filepath.Clean(p.Path)
 			rel, err := filepath.Rel(cleanTarget, cleanPhotoPath)
 			if err != nil || strings.HasPrefix(rel, "..") {
 				continue
 			}
+		}
+		if !showHidden && IsHiddenPath(cleanPhotoPath) {
+			continue
 		}
 		if favoriteOnly && !p.IsFavorite {
 			continue

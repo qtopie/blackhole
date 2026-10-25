@@ -61,10 +61,15 @@ func NewServer(cfg *config.Config) *Server {
 
 		c.Set("authenticated", false)
 
-		// Anonymous read-only: only allow GET / HEAD for /public and /public/*
+		// Anonymous read-only: only allow GET / HEAD for /public and /public/*,
+		// or album photo endpoints (handler enforces open mode public restriction)
 		if c.Request.Method == "GET" || c.Request.Method == "HEAD" {
 			reqPath := path.Clean(c.Request.URL.Path)
 			if reqPath == "/public" || strings.HasPrefix(reqPath, "/public/") {
+				c.Next()
+				return
+			}
+			if strings.HasPrefix(reqPath, "/api/album/photos") {
 				c.Next()
 				return
 			}

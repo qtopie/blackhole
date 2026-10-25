@@ -1,74 +1,73 @@
-# RFC-0005: 任意指定目录查看图片合集 (Custom Directory Photo Gallery)
+# RFC-0005: 任意指定目录查看图片合集与隐私安全控制 (Custom Directory Photo Gallery)
 
-- **Status:** Under Review
+- **Status:** Under Review (Updating for Open Mode & Hidden Mode Controls)
 - **Author:** Antigravity Agent
 - **Created Date:** 2026-10-25
 
 ## 1. Summary
 
-在 Blackhole NAS 中新增「任意指定目录查看图片合集」功能：
-1. 用户在文件管理器中浏览任何文件夹时，可一键切换到当前目录的「图片合集 / 画廊视图」，以响应式流式布局、缩略图、分页与全屏自适应灯箱（支持缩放/旋转/快捷键翻页）浏览该目录下的全部媒体。
-2. 在「照片相册」Tab 中，用户可任意指定目录路径（支持相对路径与绝对路径，提供快速切换与一键返回默认相册），动态加载并展示该目录的图片合集。
-3. 后端 API 支持 `GET /api/album/photos?dir=<path>` 与 `POST /api/album/scan?dir=<path>`，按指定目录隔离过滤图片，并在必要时按需扫描新指定的目录。
+在 Blackhole NAS 中新增「任意指定目录查看图片合集」功能，并建立完备的**开放模式（Open/Public Mode）**与**隐藏模式（Hidden/Privacy Mode）**访问隔离控制：
+1. **开放模式（Open Mode / `/public` 免密访问）**：
+   - 未认证访客或只读浏览状态下，仅允许查看位于 `/public/*` 目录下的图片合集。
+   - 严禁匿名访问私有目录（如 `/photos`, `/.relex`, `/个人文件`, `/vault` 等）的相册，接口一律返回 `401 Unauthorized`。
+2. **隐藏模式控制（Hidden Mode / `show_hidden`）**：
+   - 默认状态下「隐藏模式关闭」(`show_hidden=0`)：
+     - 默认相册仅展示 `albumDir`（如 `/var/nas_share/photos`）内的照片，严禁混入任何路径包含 `/.` 的私密隐藏文件；
+     - 禁止查看任何私密/隐藏目录（路径中包含以 `.` 开头的段，如 `.relex`、`.cache` 等）的相册与扫描操作，请求直接返回 `403 Forbidden`；
+   - 仅当用户在文件管理中主动点击「👁️ 显示隐藏项目」（隐藏模式开启，`show_hidden=1`）时，相册才允许浏览、索引并展示私密隐藏目录中的照片合集。
+3. **UI 双向直达与无缝切换**：
+   - 在「📁 文件管理」与「🖼️ 照片相册」中无缝联动，保持当前所选路径、隐藏模式状态与灯箱大图体验。
 
 ## 2. Motivation
 
-当前相册模块绑定于单一全局配置目录（`albumDir`，默认 `/var/nas_share/photos`）。然而在实际 NAS 使用场景中：
-- 用户的照片可能分散存储在各个不同目录（例如不同年份相册、相机备份目录、工作素材目录、公共壁纸等）；
-- 修改相册目录需要通过 `config` API 永久更改全局设置，且数据库中不同目录的照片相互混合；
-- 在「文件管理」页面浏览带有大量图片的文件夹时，只能在表格中逐行查看文件名和小图标，缺乏沉浸式、快速大图预览的合集画廊体验。
+NAS 用户的数据既包含公开分享内容（`/public`）、日常相册（`/photos`），也包含高度私密的隐匿内容（如以 `.` 开头的隐藏文件夹，例如 `.relex`）。
+若缺乏清晰的模式区分：
+1. 匿名访客可能越权探测或窥视私有目录的相册；
+2. 当管理员在普通视图（隐藏模式关闭）下浏览相册时，私密隐藏文件夹中的敏感照片可能误被展示；
+3. 指定目录功能若未经隐私校验，可能直接绕过文件管理器的「隐藏私密项目」控制。
 
-通过本功能，无论在文件管理中还是相册主页面，用户都可以随心所欲指定或切换任意目录查看图片合集。
+因此，必须在 API 与 UI 层将开放模式（公开 vs 私有）与隐藏模式（可见 vs 隐匿）彻底打通与闭环。
 
 ## 3. Detailed Design
 
-### 3.1 路径解析规范
+### 3.1 路径解析与模式判定规范
 
-- 支持两种路径输入：
-  - **相对路径**：例如 `photos/2026`、`public/wallpapers`，自动相对于 NAS 根共享目录（`shareDir`）拼接并进行路径防逃逸清洗。
-  - **绝对路径**：例如 `/var/nas_share/photos` 或外部已挂载目录，进行 `filepath.Clean` 处理，并校验目录是否存在且为有效目录。
-- 访客在 `/public/*` 下只能指定 `/public` 内部的相对/绝对路径，禁止越权访问私有目录。管理员认证后可指定任何有效可读目录。
+定义路径属性判定函数：
+- **`isPublic(path)`**: 路径位于 `/var/nas_share/public`（或相对路径以 `public` 开头）。
+- **`isHiddenPath(path)`**: 路径中任意一段以 `.` 开头（例如 `.relex`, `photos/.secret/pic.jpg`）。
 
-### 3.2 后端 API 扩展
+### 3.2 开放模式（Open Mode）访问控制
 
-1. **`GET /api/album/photos` 增加 `dir` 参数**:
-   - `dir`（可选）：指定需要查看的目录路径。
-   - 若未提供 `dir`，保持既有行为（展示默认相册目录）。
-   - 若提供了 `dir`：
-     - 若该目录尚未建立索引或用户请求即时同步，调用 `ScanDirectoryPath(targetDir)` 扫描该目录下的图片/视频。
-     - 严格过滤并只返回位于该目录下的媒体条目（`photo.Path` 属于 `targetDir`）。
-     - 支持翻页（`page`, `limit`）、纯黑过滤（`dark`）、收藏过滤（`favorite`）。
-2. **`POST /api/album/scan` 增加 `dir` 参数**:
-   - `dir`（可选）：仅对该指定目录进行深度递归扫描与媒体索引，返回该目录扫描出的媒体数量。
-3. **`GetPhotoFile` 与 `GetPhotoThumbnail` 性能优化**:
-   - 改为通过 `m.store.GetPhoto(id)` 进行 O(1) 检索，替代遍历全量列表，保证跨目录浏览与缩略图加载高速流畅。
+- 客户端请求如果未携带认证凭证（即 `authenticated == false`）：
+  - 属于开放模式。
+  - `GET /api/album/photos`：
+    - `dir` 必须显式指定且必须位于 `public` 目录下（`isPublic(dir) == true`）。
+    - 若 `dir` 未指定（企图访问默认私有相册）或 `dir` 指向私有目录（如 `photos`, `.relex`），立即返回 `401 Unauthorized` 并触发登录挑战。
+  - `GET /api/album/photos/:id/file` 及 `thumbnail`：
+    - 校验对应媒体文件的物理路径，若不在 `public` 目录下，立即返回 `401 Unauthorized`。
 
-### 3.3 UI 交互设计
+### 3.3 隐藏模式（Hidden Mode）访问控制
 
-1. **文件管理直达（Files View）**:
-   - 顶部操作栏新增 `🖼️ 查看图片合集` 按钮。
-   - 点击后携带当前所在目录相对路径无缝切换到合集视图（URL 更新为 `/#album?dir=<relPath>`）。
-   - 在合集视图顶部提供 `📁 返回文件列表` 按钮，一键回到此前浏览的文件目录。
-2. **相册主视图指定目录（Album View）**:
-   - 顶部工具栏展示当前查看的合集路径：`📂 当前目录: /var/nas_share/xxx`。
-   - 提供「📂 切换目录」按钮，弹出对话框供用户输入或粘贴任意目录路径。
-   - 若当前非默认相册，显示「🏠 默认相册」快捷按钮，一键切回默认相册。
-3. **沉浸式灯箱体验**:
-   - 复用现有 Fluent UI Lightbox：Container-fit 自适应视口尺寸，支持图片/视频播放、缩放、旋转、左右按键无缝切图。
+- 认证管理员访问时，受 `show_hidden` 状态控制（前端通过 `localStorage.getItem('blackhole_show_hidden')` 维护并在请求中传递 `?show_hidden=1/0`）：
+  - **隐藏模式关闭（`show_hidden != 1`）**：
+    - 默认相册（`dir == ""`）仅检索 `albumDir` 下的非隐藏照片（过滤掉所有 `isHiddenPath(p.Path)` 的条目）。
+    - 若请求中指定了隐藏目录（`isHiddenPath(dir) == true`）：
+      - 拦截并返回 `403 Forbidden`：`{"error": "私密隐藏模式已关闭，无法查看私有/隐藏目录相册，请先开启显示隐藏项目"}`。
+      - `POST /api/album/scan?dir=...` 同样拒绝扫描隐藏目录。
+  - **隐藏模式开启（`show_hidden == 1`）**：
+    - 允许管理员查看与扫描指定的隐藏目录（如 `.relex`）。
+    - 默认相册中若包含隐藏子目录的照片亦允许呈现。
 
-## 4. Alternatives Considered
+### 3.4 UI 交互与状态同步
 
-| 方案 | 评价 | 结论 |
-| :--- | :--- | :--- |
-| **仅通过每次修改全局 `album_dir`** | 污染全局状态，旧目录数据残留混杂，操作繁琐 | 否定 |
-| **前端拉取文件列表直接当图片合集展示** | 缺少缩略图缓存、尺寸解析、EXIF 偏转及纯黑误拍检测 | 否定 |
-| **动态扫描 + 目录级隔离索引 + 双向 UI 直达** | 性能优异，缩略图自动缓存，轻量且操作直观 | **采纳** |
+- 前端在相册中请求 `/api/album/photos` 时自动附加当前 `&show_hidden=` 参数；
+- 当在文件管理器中切换「👁️ 显示隐藏项目 / 🙈 隐藏私密项目」时，相册的展示状态随之动态联动；
+- 若用户尝试在隐藏模式关闭状态下切换至 `.relex` 等私密目录，UI 给出明确友好提示并引导开启「显示隐藏项目」。
 
-## 5. Security & Resource Constraints
+## 4. Acceptance Criteria & Test Scenarios
 
-- **资源控制（SpacemiT K1 内存限制 80M/100M）**：
-  - 单目录扫描保持轻量，尺寸解析限制在 5MB 以内图片文件；
-  - 缩略图后台异步或按需生成，每批次主动触发 `runtime.GC()`，严控内存占用。
-- **安全检查**：
-  - 非管理员用户只允许在 `/public` 路径树内指定目录；
-  - 路径校验使用 `filepath.Clean` 避免路径遍历漏洞。
+1. **[SPEC-GALLERY-001] 开放模式拦截私有相册**: 未认证客户端请求 `GET /api/album/photos`（默认私有相册）或 `GET /api/album/photos?dir=photos` 返回 401。
+2. **[SPEC-GALLERY-002] 开放模式允许公开相册**: 未认证客户端请求 `GET /api/album/photos?dir=public/wallpapers` 成功返回 200 及公开图片。
+3. **[SPEC-GALLERY-003] 隐藏模式关闭拦截私密目录**: 已认证管理员在 `show_hidden=0` 时请求 `GET /api/album/photos?dir=.relex` 返回 403 Forbidden。
+4. **[SPEC-GALLERY-004] 隐藏模式开启允许私密目录**: 已认证管理员在 `show_hidden=1` 时请求 `GET /api/album/photos?dir=.relex` 成功返回 200 并展现 `.relex` 内照片。
+5. **[SPEC-GALLERY-005] 默认相册彻底隔离私密隐藏照片**: 在隐藏模式关闭时，默认相册绝对不展示任何路径包含 `/.` 的照片。

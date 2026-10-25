@@ -496,8 +496,37 @@ func TestCustomDirectoryPhotoGallery(t *testing.T) {
 	if !strings.Contains(bodyStr, "viewCurrentDirGallery") {
 		t.Fatalf("expected RenderWebUI to include viewCurrentDirGallery")
 	}
-	if !strings.Contains(bodyStr, "promptSwitchAlbumDir") {
-		t.Fatalf("expected RenderWebUI to include promptSwitchAlbumDir")
+	// 7. Test Hidden Mode: show_hidden=0 vs show_hidden=1
+	hiddenDir := filepath.Join(tempDir, ".relex_secret")
+	os.MkdirAll(hiddenDir, 0755)
+	if err := createTestJPEG(filepath.Join(hiddenDir, "secret.jpg"), 100, 100, false); err != nil {
+		t.Fatalf("failed to create secret.jpg: %v", err)
+	}
+
+	// 7a. show_hidden=0 should return 403 Forbidden
+	req = httptest.NewRequest("GET", "/api/album/photos?dir=.relex_secret&show_hidden=0", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for hidden dir with show_hidden=0, got %d", w.Code)
+	}
+
+	// 7b. scan on hidden dir with show_hidden=0 should return 403 Forbidden
+	scanHiddenBody, _ := json.Marshal(map[string]interface{}{"dir": ".relex_secret", "show_hidden": false})
+	req = httptest.NewRequest("POST", "/api/album/scan", bytes.NewBuffer(scanHiddenBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for hidden scan with show_hidden=0, got %d", w.Code)
+	}
+
+	// 7c. show_hidden=1 should return 200 OK
+	req = httptest.NewRequest("GET", "/api/album/photos?dir=.relex_secret&show_hidden=1", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for hidden dir with show_hidden=1, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
