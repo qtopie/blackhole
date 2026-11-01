@@ -56,7 +56,25 @@ func RegisterServices(cfg *config.Config) (*Service, error) {
 		}
 	}
 
-	// 3. Register Device Info / HTTP (_http._tcp)
+	// 3. Register NFS (_nfs._tcp)
+	if cfg.EnableNFS {
+		nfsPort, _ := strconv.Atoi(cfg.NFSPort)
+		nfsSrv, err := zeroconf.Register(
+			hostname+" (NFS)",
+			"_nfs._tcp",
+			"local.",
+			nfsPort,
+			[]string{"txtv=1", "path=/"},
+			nil,
+		)
+		if err != nil {
+			log.Printf("Failed to register mDNS NFS service: %v", err)
+		} else {
+			servers = append(servers, nfsSrv)
+		}
+	}
+
+	// 4. Register Device Info / HTTP (_http._tcp)
 	httpPort, _ := strconv.Atoi(cfg.Port)
 	httpSrv, err := zeroconf.Register(
 		hostname+" (Domour Drive)",

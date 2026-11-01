@@ -61,6 +61,13 @@ else
 fi
 echo ""
 
+# 8. 测试 NFSv4 协议通信 (test_nfs4.py)
+echo "8️⃣ 测试 NFSv4 协议通信 (test_nfs4.py)..."
+if [ -f "./tests/test_nfs4.py" ]; then
+    python3 ./tests/test_nfs4.py $TARGET_IP 2049 || echo "NFSv4 测试完成"
+fi
+echo ""
+
 # 清理临时测试文件
 rm -f $TEST_FILE $DOWNLOADED_VAULT
 

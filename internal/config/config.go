@@ -19,6 +19,7 @@ type Config struct {
 
 	EnableNFS bool
 	NFSPort   string
+	NFSAllowedIPs string
 
 	DaprHost       string
 	DaprPort       string
@@ -76,6 +77,7 @@ func LoadConfig() *Config {
 	if nfsPort == "" {
 		nfsPort = "2049"
 	}
+	nfsAllowedIPs := os.Getenv("BLACKHOLE_NFS_ALLOWED_IPS")
 
 	daprHost := os.Getenv("DAPR_HOST")
 	if daprHost == "" {
@@ -123,6 +125,7 @@ func LoadConfig() *Config {
 		SMBPort:        smbPort,
 		EnableNFS:      enableNFS,
 		NFSPort:        nfsPort,
+		NFSAllowedIPs:  nfsAllowedIPs,
 		DaprHost:       daprHost,
 		DaprPort:       daprPort,
 		DaprStateStore: daprStateStore,
