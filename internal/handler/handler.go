@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/qtopie/blackhole/internal/album"
 	"github.com/qtopie/blackhole/internal/book"
+	"github.com/qtopie/blackhole/internal/config"
 	"github.com/qtopie/blackhole/internal/downloader"
 	"github.com/qtopie/blackhole/internal/store"
 	"github.com/qtopie/blackhole/internal/vault"
@@ -23,11 +24,44 @@ import (
 	"golang.org/x/net/webdav"
 )
 
+type NFSProtocolInfo struct {
+	Enabled           bool     `json:"enabled"`
+	Port              int      `json:"port"`
+	ExportPath        string   `json:"export_path"`
+	DefaultVersion    string   `json:"default_version"`
+	SupportedVersions []string `json:"supported_versions"`
+}
+
+type SMBProtocolInfo struct {
+	Enabled   bool   `json:"enabled"`
+	Port      int    `json:"port"`
+	ShareName string `json:"share_name"`
+}
+
+type WebDAVProtocolInfo struct {
+	Enabled bool   `json:"enabled"`
+	Port    int    `json:"port"`
+	Path    string `json:"path"`
+}
+
+type ProtocolsInfo struct {
+	NFS    NFSProtocolInfo    `json:"nfs"`
+	SMB    SMBProtocolInfo    `json:"smb"`
+	WebDAV WebDAVProtocolInfo `json:"webdav"`
+}
+
+type NASEndpointsResponse struct {
+	ServerVersion string        `json:"server_version"`
+	ShareDir      string        `json:"share_dir"`
+	Protocols     ProtocolsInfo `json:"protocols"`
+}
+
 type SysInfoResponse struct {
-	ShareDir    string `json:"share_dir"`
-	TotalGB     uint64 `json:"total_gb"`
-	FreeGB      uint64 `json:"free_gb"`
-	UsedPercent string `json:"used_percent"`
+	ShareDir    string         `json:"share_dir"`
+	TotalGB     uint64         `json:"total_gb"`
+	FreeGB      uint64         `json:"free_gb"`
+	UsedPercent string         `json:"used_percent"`
+	Protocols   *ProtocolsInfo `json:"protocols,omitempty"`
 }
 
 var (
@@ -52,10 +86,66 @@ type UpdateAlbumConfigReq struct {
 
 type Handler struct {
 	shareDir      string
+	cfg           *config.Config
 	downloadMgr   *downloader.Manager
 	webdavHandler *webdav.Handler
 	albumMgr      *album.Manager
 	bookMgr       *book.Manager
+}
+
+func (h *Handler) SetConfig(cfg *config.Config) {
+	h.cfg = cfg
+}
+
+func (h *Handler) buildNASEndpoints() NASEndpointsResponse {
+	nfsPort := 2049
+	smbPort := 445
+	webdavPort := 50056
+	nfsEnabled := true
+	smbEnabled := true
+	webdavEnabled := true
+
+	if h.cfg != nil {
+		if p, err := strconv.Atoi(h.cfg.NFSPort); err == nil && p > 0 {
+			nfsPort = p
+		}
+		if p, err := strconv.Atoi(h.cfg.SMBPort); err == nil && p > 0 {
+			smbPort = p
+		}
+		if p, err := strconv.Atoi(h.cfg.Port); err == nil && p > 0 {
+			webdavPort = p
+		}
+		nfsEnabled = h.cfg.EnableNFS
+		smbEnabled = h.cfg.EnableSMB
+	}
+
+	return NASEndpointsResponse{
+		ServerVersion: "1.0.0",
+		ShareDir:      h.shareDir,
+		Protocols: ProtocolsInfo{
+			NFS: NFSProtocolInfo{
+				Enabled:           nfsEnabled,
+				Port:              nfsPort,
+				ExportPath:        "/",
+				DefaultVersion:    "4.2",
+				SupportedVersions: []string{"4.0", "4.1", "4.2"},
+			},
+			SMB: SMBProtocolInfo{
+				Enabled:   smbEnabled,
+				Port:      smbPort,
+				ShareName: "share",
+			},
+			WebDAV: WebDAVProtocolInfo{
+				Enabled: webdavEnabled,
+				Port:    webdavPort,
+				Path:    "/shared/",
+			},
+		},
+	}
+}
+
+func (h *Handler) GetNASEndpoints(c *gin.Context) {
+	c.JSON(http.StatusOK, h.buildNASEndpoints())
 }
 
 func NewHandler(shareDir string, downloadMgr *downloader.Manager, albumMgr *album.Manager, bookMgr *book.Manager) *Handler {
@@ -134,11 +224,13 @@ func (h *Handler) GetSysInfo(c *gin.Context) {
 		return
 	}
 
+	protoInfo := h.buildNASEndpoints().Protocols
 	c.JSON(http.StatusOK, SysInfoResponse{
 		ShareDir:    h.shareDir,
 		TotalGB:     usage.Total / (1024 * 1024 * 1024),
 		FreeGB:      usage.Free / (1024 * 1024 * 1024),
 		UsedPercent: fmt.Sprintf("%.2f%%", usage.UsedPercent),
+		Protocols:   &protoInfo,
 	})
 }
 

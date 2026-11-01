@@ -33,6 +33,7 @@ func NewServer(cfg *config.Config) *Server {
 	al := album.NewManager(cfg.AlbumDir, st)
 	bk := book.NewManager(cfg.BooksDir, st)
 	h := handler.NewHandler(cfg.ShareDir, dl, al, bk)
+	h.SetConfig(cfg)
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -73,6 +74,10 @@ func NewServer(cfg *config.Config) *Server {
 				c.Next()
 				return
 			}
+			if reqPath == "/api/nas/endpoints" || reqPath == "/api/sysinfo" {
+				c.Next()
+				return
+			}
 		}
 
 		basicAuth(c)
@@ -81,6 +86,7 @@ func NewServer(cfg *config.Config) *Server {
 	api := r.Group("/api", flexibleAuth)
 	{
 		api.GET("/sysinfo", h.GetSysInfo)
+		api.GET("/nas/endpoints", h.GetNASEndpoints)
 		api.GET("/p2p/progress", h.GetP2PProgress)
 		api.POST("/vault/upload", h.VaultUpload)
 		api.GET("/vault/download", h.VaultDownload)

@@ -39,6 +39,7 @@ func setupTestRouter(t *testing.T) (*gin.Engine, string, *album.Manager) {
 	al := album.NewManager(cfg.AlbumDir, st)
 	bk := book.NewManager(cfg.BooksDir, st)
 	h := NewHandler(tempDir, dl, al, bk)
+	h.SetConfig(cfg)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -46,6 +47,7 @@ func setupTestRouter(t *testing.T) (*gin.Engine, string, *album.Manager) {
 	api := r.Group("/api")
 	{
 		api.GET("/sysinfo", h.GetSysInfo)
+		api.GET("/nas/endpoints", h.GetNASEndpoints)
 		api.POST("/upload", h.Upload)
 		api.POST("/upload/check", h.CheckUploadInstant)
 		api.POST("/mkdir", h.Mkdir)
@@ -671,5 +673,54 @@ func TestDarkPhotoDetectionAndBatchDelete(t *testing.T) {
 
 	if _, err := os.Stat(darkPhotoPath); err == nil {
 		t.Fatalf("expected dark photo file to be deleted from disk")
+	}
+}
+
+func TestGetNASEndpoints(t *testing.T) {
+	r, _, _ := setupTestRouter(t)
+
+	// [SPEC-AUTO-001] Verify /api/nas/endpoints response structure
+	req := httptest.NewRequest("GET", "/api/nas/endpoints", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var endpoints NASEndpointsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &endpoints); err != nil {
+		t.Fatalf("failed to decode NASEndpointsResponse: %v", err)
+	}
+
+	if !endpoints.Protocols.NFS.Enabled || endpoints.Protocols.NFS.Port != 2049 {
+		t.Errorf("expected NFS port 2049 enabled, got port=%d enabled=%v", endpoints.Protocols.NFS.Port, endpoints.Protocols.NFS.Enabled)
+	}
+	if endpoints.Protocols.NFS.DefaultVersion != "4.2" {
+		t.Errorf("expected NFS default version 4.2, got %s", endpoints.Protocols.NFS.DefaultVersion)
+	}
+	if endpoints.Protocols.NFS.ExportPath != "/" {
+		t.Errorf("expected export path '/', got %s", endpoints.Protocols.NFS.ExportPath)
+	}
+	if !endpoints.Protocols.SMB.Enabled || endpoints.Protocols.SMB.Port != 445 {
+		t.Errorf("expected SMB port 445 enabled, got port=%d enabled=%v", endpoints.Protocols.SMB.Port, endpoints.Protocols.SMB.Enabled)
+	}
+	if !endpoints.Protocols.WebDAV.Enabled || endpoints.Protocols.WebDAV.Port != 50056 {
+		t.Errorf("expected WebDAV port 50056 enabled, got port=%d enabled=%v", endpoints.Protocols.WebDAV.Port, endpoints.Protocols.WebDAV.Enabled)
+	}
+
+	// Verify /api/sysinfo also contains Protocols
+	sysReq := httptest.NewRequest("GET", "/api/sysinfo", nil)
+	sysW := httptest.NewRecorder()
+	r.ServeHTTP(sysW, sysReq)
+	if sysW.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from sysinfo, got %d: %s", sysW.Code, sysW.Body.String())
+	}
+	var sysInfo SysInfoResponse
+	if err := json.Unmarshal(sysW.Body.Bytes(), &sysInfo); err != nil {
+		t.Fatalf("failed to decode SysInfoResponse: %v", err)
+	}
+	if sysInfo.Protocols == nil || sysInfo.Protocols.NFS.Port != 2049 {
+		t.Errorf("expected sysInfo.Protocols to be populated, got %+v", sysInfo.Protocols)
 	}
 }
